@@ -1,24 +1,10 @@
 """
 routes/progress.py
--------------------
-Handles level-up evaluation and progress tracking:
-
-    POST /api/progress/evaluate
-        - Called after a level_up test is graded
-        - Calls evaluate_progress() (AI function 7)
-        - Acts on the decision: level_up / retain / ease_roadmap / flag_unfit
-        - Writes to progress_log
-        - If levelled up: increments current_level, unlocks next level's
-          first skill, regenerates roadmap
-        - Returns the decision + any updated state
-
-    GET  /api/progress/log
-        - Returns the full progress_log for the student (for graph)
-        - Also returns the list of all learned skills
 """
 
-from flask import Blueprint, request, jsonify, g
 import json
+from decimal import Decimal
+from flask import Blueprint, request, jsonify, g
 
 from config.db import get_db_connection
 from utils.auth import token_required
@@ -26,48 +12,22 @@ from services.groq_service import evaluate_progress, generate_roadmap
 
 progress_bp = Blueprint("progress", __name__)
 
+FAILURE_STREAK_THRESHOLD = 3
 
-# ============================================================
-# POST /api/progress/evaluate
-# ============================================================
+
+def _make_serializable(obj):
+    if isinstance(obj, list):
+        return [_make_serializable(i) for i in obj]
+    if isinstance(obj, dict):
+        return {k: _make_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, Decimal):
+        return float(obj)
+    return obj
+
+
 @progress_bp.route("/progress/evaluate", methods=["POST"])
 @token_required
 def evaluate():
-    """
-    Run progress evaluation after a level_up test session is graded.
-
-    Expected JSON body:
-        {
-          "session_id": 14,
-          "total_score_percent": 85.0,
-          "knowledge_gaps": ["Recursion", "Big-O"]
-        }
-
-    Flow:
-        1. Fetch previous score + consecutive_no_improvement count
-           from progress_log
-        2. Call evaluate_progress() (AI function 7)
-        3. Act on decision:
-             level_up      -> current_level += 1, unlock first skill of
-                              new level, regenerate roadmap
-             retain        -> no level change, roadmap unchanged
-             ease_roadmap  -> no level change, regenerate roadmap with
-                              same context (AI prompt will make it easier)
-             flag_unfit    -> mark in progress_log, frontend shows
-                              career-change offer
-        4. Write progress_log row
-        5. Return decision + updated level
-
-    On success (200):
-        {
-          "decision": "level_up",
-          "reasoning": "...",
-          "previous_level": 2,
-          "new_level": 3,          # same as previous if not levelled up
-          "attempt_number": 4,
-          "flag_unfit": false
-        }
-    """
     data                = request.get_json(silent=True) or {}
     session_id          = data.get("session_id")
     total_score_percent = data.get("total_score_percent")
@@ -82,7 +42,6 @@ def evaluate():
     try:
         with conn.cursor() as cursor:
 
-            # --- Verify session belongs to user and is level_up type ---
             cursor.execute(
                 """
                 SELECT id, level, attempt_number
@@ -98,7 +57,6 @@ def evaluate():
             current_level  = session["level"]
             attempt_number = session["attempt_number"]
 
-            # --- Fetch profile for career ---
             cursor.execute(
                 "SELECT dream_career FROM student_profiles WHERE user_id = %s",
                 (g.user_id,)
@@ -106,7 +64,6 @@ def evaluate():
             profile = cursor.fetchone()
             dream   = profile["dream_career"] if profile else ""
 
-            # --- Previous score from progress_log ---
             cursor.execute(
                 """
                 SELECT total_score, status
@@ -118,21 +75,9 @@ def evaluate():
                 (g.user_id,)
             )
             prev_row       = cursor.fetchone()
-            previous_score = prev_row["total_score"] if prev_row else None
+            previous_score = float(prev_row["total_score"]) if prev_row else None
 
-            # --- Count recent FAILED attempts (score < 80%), not just ---
-            # --- "no improvement" - this is the metric that actually ---
-            # --- reflects whether the student is struggling. ----------
-            # NOTE: we deliberately do NOT rely on consecutive
-            # "improvement" streaks here. A student whose scores
-            # genuinely fluctuate (45% -> 50% -> 40% -> 55%) can show
-            # "improvement" on some attempts yet still be failing to
-            # pass every single time - tracking only consecutive
-            # non-improvement let real struggling students slip through
-            # without ever reaching the threshold. Counting consecutive
-            # FAILED-TO-PASS attempts (score < 80%) is the metric that
-            # actually matches the real-world signal: "this student
-            # keeps failing the level-up test."
+            # Count consecutive failed attempts (score < 80%)
             cursor.execute(
                 """
                 SELECT total_score FROM progress_log
@@ -146,15 +91,11 @@ def evaluate():
 
             consecutive_failures = 0
             for s in recent_scores:
-                if s is not None and s < 80:
+                if s is not None and float(s) < 80:
                     consecutive_failures += 1
                 else:
                     break
 
-            # consecutive_no_improvement is still computed and passed to
-            # the AI as extra context for its written reasoning, but it
-            # no longer GATES the flag_unfit decision on its own - see
-            # the FAILURE_STREAK_THRESHOLD override below.
             cursor.execute(
                 """
                 SELECT status FROM progress_log
@@ -173,14 +114,6 @@ def evaluate():
                 else:
                     break
 
-        # How many consecutive failed (< 80%) level-up attempts before
-        # we force flag_unfit, regardless of what the AI decides. This
-        # is a hard, code-enforced rule rather than something the LLM
-        # is merely asked to follow - the AI's job is to provide the
-        # human-readable reasoning, not to gatekeep this decision.
-        FAILURE_STREAK_THRESHOLD = 3
-
-        # --- AI evaluation call (function 7) ---
         try:
             eval_result = evaluate_progress(
                 previous_score,
@@ -195,17 +128,10 @@ def evaluate():
         decision  = eval_result.get("decision", "retain")
         reasoning = eval_result.get("reasoning", "")
 
-        # --- Hard override: this attempt's own failure counts toward ---
-        # --- the streak too, so check it BEFORE acting on the decision ---
         this_attempt_failed = total_score_percent < 80
-        effective_streak = consecutive_failures + (1 if this_attempt_failed else 0)
+        effective_streak    = consecutive_failures + (1 if this_attempt_failed else 0)
 
         if this_attempt_failed and effective_streak >= FAILURE_STREAK_THRESHOLD and decision != "level_up":
-            if decision != "flag_unfit":
-                print(
-                    f"[progress/evaluate] overriding AI decision '{decision}' -> "
-                    f"'flag_unfit' (user_id={g.user_id}, effective_streak={effective_streak})"
-                )
             decision = "flag_unfit"
             if not reasoning:
                 reasoning = (
@@ -217,16 +143,14 @@ def evaluate():
         new_level  = current_level
         flag_unfit = decision == "flag_unfit"
 
-        # Map decision to progress_log status strings
         status_map = {
-            "level_up":    "leveled_up",
-            "retain":      "retained",
-            "ease_roadmap":"eased",
-            "flag_unfit":  "eased",   # still counts as no improvement
+            "level_up":     "leveled_up",
+            "retain":       "retained",
+            "ease_roadmap": "eased",
+            "flag_unfit":   "eased",
         }
         log_status = status_map.get(decision, "retained")
 
-        # --- Act on decision ---
         conn3 = get_db_connection()
         try:
             with conn3.cursor() as cursor:
@@ -234,7 +158,6 @@ def evaluate():
                 if decision == "level_up" and current_level < 5:
                     new_level = current_level + 1
 
-                    # Increment level in skill_levels
                     cursor.execute(
                         """
                         UPDATE skill_levels SET current_level = %s
@@ -243,7 +166,6 @@ def evaluate():
                         (new_level, g.user_id, dream)
                     )
 
-                    # Unlock the first locked skill of the new level
                     cursor.execute(
                         """
                         SELECT id FROM skill_tree
@@ -260,13 +182,10 @@ def evaluate():
                             (first_skill["id"],)
                         )
 
-                # Save knowledge gaps into progress_log notes so
-                # generate_roadmap() can read them on next call
                 notes_str = ""
                 if knowledge_gaps:
                     notes_str = "gaps:" + ",".join(knowledge_gaps)
 
-                # Write progress_log row
                 cursor.execute(
                     """
                     INSERT INTO progress_log
@@ -285,7 +204,6 @@ def evaluate():
                     )
                 )
 
-                # If level_up or ease_roadmap: regenerate roadmap
                 if decision in ("level_up", "ease_roadmap"):
                     cursor.execute(
                         """
@@ -296,26 +214,26 @@ def evaluate():
                         """,
                         (g.user_id, dream, new_level)
                     )
-                    skill_tree = cursor.fetchall()
+                    skill_tree = _make_serializable(list(cursor.fetchall()))
 
                     cursor.execute(
                         "SELECT subject, grade, gpa FROM academic_results WHERE user_id = %s",
                         (g.user_id,)
                     )
-                    academics = cursor.fetchall()
+                    academics = _make_serializable(list(cursor.fetchall()))
 
                     cursor.execute(
-                        """
-                        SELECT MAX(version) AS max_v FROM roadmaps WHERE user_id = %s
-                        """,
+                        "SELECT MAX(version) AS max_v FROM roadmaps WHERE user_id = %s",
                         (g.user_id,)
                     )
                     ver_row      = cursor.fetchone()
                     next_version = (ver_row["max_v"] or 0) + 1
 
-                    scores_ctx = [{"attempt": attempt_number,
-                                   "total_score_percent": total_score_percent,
-                                   "level": current_level}]
+                    scores_ctx = _make_serializable([{
+                        "attempt":             attempt_number,
+                        "total_score_percent": total_score_percent,
+                        "level":               current_level,
+                    }])
 
                     try:
                         rm = generate_roadmap(
@@ -330,8 +248,6 @@ def evaluate():
                             (g.user_id, stored_payload, next_version)
                         )
                     except Exception as e:
-                        # Roadmap regeneration failing shouldn't block the
-                        # level-up from being recorded — log and continue.
                         print(f"[progress/evaluate] roadmap regen error: {e}")
 
         finally:
@@ -348,58 +264,20 @@ def evaluate():
 
     except Exception as e:
         print(f"[progress/evaluate] error: {e}")
+        import traceback; print(traceback.format_exc())
         return jsonify({"error": "Progress evaluation failed unexpectedly"}), 500
 
     finally:
         conn.close()
 
 
-# ============================================================
-# GET /api/progress/log
-# ============================================================
 @progress_bp.route("/progress/log", methods=["GET"])
 @token_required
 def get_progress_log():
-    """
-    Return the full progress history for the student.
-
-    Used by the Progress page to:
-      - Draw the score-over-time graph (attempt_number on x-axis,
-        total_score on y-axis) via Recharts/Chart.js
-      - Show the current level badge
-      - List all learned skills
-
-    On success (200):
-        {
-          "current_level": 3,
-          "progress_log": [
-            {
-              "attempt_number": 1,
-              "total_score": 55.0,
-              "previous_score": null,
-              "level": 1,
-              "status": "retained",
-              "created_at": "2026-06-01T10:00:00"
-            },
-            ...
-          ],
-          "learned_skills": [
-            {
-              "skill_id": 5,
-              "skill_name": "Variables",
-              "category": "Programming Basics",
-              "level": 1,
-              "learned_at": "2026-06-02T14:00:00"
-            },
-            ...
-          ]
-        }
-    """
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
 
-            # Current level
             cursor.execute(
                 """
                 SELECT sp.dream_career, sl.current_level
@@ -412,7 +290,6 @@ def get_progress_log():
             level_info    = cursor.fetchone()
             current_level = level_info["current_level"] if level_info else 1
 
-            # Full progress log oldest-first for the graph
             cursor.execute(
                 """
                 SELECT attempt_number, total_score, previous_score,
@@ -428,8 +305,11 @@ def get_progress_log():
             for row in log_rows:
                 if row.get("created_at"):
                     row["created_at"] = row["created_at"].isoformat()
+                if row.get("total_score") is not None:
+                    row["total_score"] = float(row["total_score"])
+                if row.get("previous_score") is not None:
+                    row["previous_score"] = float(row["previous_score"])
 
-            # All learned skills with skill tree details
             cursor.execute(
                 """
                 SELECT ls.skill_id, st.skill_name, st.category, st.level, ls.learned_at
