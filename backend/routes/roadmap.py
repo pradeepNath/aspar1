@@ -127,7 +127,7 @@ def create_roadmap():
             cursor.execute(
                 """
                 SELECT qs.test_type, qs.level,
-                       ROUND(SUM(qsc.score_out_of_10) /
+                       ROUND(SUM(qsc.score_out_of_10)::numeric /
                              (COUNT(qsc.id) * 10.0) * 100, 1) AS total_score_percent
                 FROM quiz_sessions qs
                 JOIN quiz_scores qsc ON qsc.session_id = qs.id
