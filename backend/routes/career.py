@@ -80,7 +80,7 @@ def suggest_careers():
             cursor.execute(
                 """
                 SELECT qs.test_type, qs.level,
-                       ROUND(SUM(qsc.score_out_of_10)::numeric /
+                       ROUND(SUM(qsc.score_out_of_10) /
                              (COUNT(qsc.id) * 10.0) * 100, 1) AS total_score_percent
                 FROM quiz_sessions qs
                 JOIN quiz_scores qsc ON qsc.session_id = qs.id
