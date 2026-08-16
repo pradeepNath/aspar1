@@ -1,25 +1,5 @@
 """
 routes/skills.py
------------------
-Handles the skill tree:
-
-    POST /api/skills/generate
-        - Called ONCE after placement grading
-        - Calls generate_skill_tree() (AI function 3)
-        - Saves all 5 levels to skill_tree
-        - Sets correct initial statuses (unlocked/locked/learned)
-
-    GET  /api/skills/tree
-        - Returns the visible skill tree (current level + below only)
-        - Levels above current are never returned to the frontend
-
-    POST /api/skills/complete
-        - Called by grading route logic after a skill_test passes (>=80%)
-        - Marks a skill as 'learned', unlocks the next skill in sequence
-        - Adds a row to learned_skills
-        - Regenerates the roadmap so its "current_skill" panel always
-          points at whichever skill is unlocked NOW, not the one that
-          was just completed
 """
 
 from flask import Blueprint, request, jsonify, g
@@ -32,36 +12,13 @@ from services.groq_service import generate_skill_tree, generate_roadmap
 skills_bp = Blueprint("skills", __name__)
 
 
-# ============================================================
-# POST /api/skills/generate
-# ============================================================
 @skills_bp.route("/skills/generate", methods=["POST"])
 @token_required
 def generate_tree():
-    """
-    Generate and save the full 5-level skill tree for the student's
-    current dream career. Should be called ONCE, right after placement
-    grading sets the starting level in skill_levels.
-
-    No body required - all context is read from the DB.
-
-    Guards:
-      - If a skill tree already exists for this user+career, returns 409
-        to prevent accidental double-generation (the frontend should only
-        call this once per career).
-
-    On success (201):
-        {
-          "message": "Skill tree generated",
-          "total_skills": 28,
-          "starting_level": 2
-        }
-    """
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
 
-            # --- Fetch profile ---
             cursor.execute(
                 "SELECT dream_career FROM student_profiles WHERE user_id = %s",
                 (g.user_id,)
@@ -72,7 +29,6 @@ def generate_tree():
 
             dream = profile["dream_career"]
 
-            # --- Fetch starting level ---
             cursor.execute(
                 "SELECT current_level FROM skill_levels WHERE user_id = %s AND career = %s",
                 (g.user_id, dream)
@@ -83,7 +39,6 @@ def generate_tree():
 
             current_level = level_row["current_level"]
 
-            # --- Guard: don't regenerate if tree exists ---
             cursor.execute(
                 "SELECT COUNT(*) AS cnt FROM skill_tree WHERE user_id = %s AND career = %s",
                 (g.user_id, dream)
@@ -91,14 +46,12 @@ def generate_tree():
             if cursor.fetchone()["cnt"] > 0:
                 return jsonify({"error": "Skill tree already exists for this career"}), 409
 
-            # --- Fetch academics for AI context ---
             cursor.execute(
                 "SELECT subject, grade, gpa FROM academic_results WHERE user_id = %s",
                 (g.user_id,)
             )
             academics = cursor.fetchall()
 
-        # --- AI call (function 3) ---
         try:
             skills_data = generate_skill_tree(dream, academics, current_level)
         except Exception as e:
@@ -108,25 +61,11 @@ def generate_tree():
         if not isinstance(skills_data, list) or len(skills_data) == 0:
             return jsonify({"error": "AI returned an empty skill tree. Please try again."}), 500
 
-        # --- Determine status for each skill ---
-        # Rules from Section 4, step 5:
-        #   - Levels BELOW current_level  -> status = 'learned'
-        #     (student already placed above them, treat as done)
-        #   - current_level, sequence_order == 1 -> status = 'unlocked'
-        #     (the very first skill at the student's level is ready to work on)
-        #   - everything else at current_level   -> status = 'locked'
-        #   - levels ABOVE current_level         -> status = 'locked'
-        #
-        # sequence_order is assigned by the AI per level; we sort within
-        # each level to be safe before applying the unlock logic.
-
-        # Group skills by level to find the minimum sequence_order per level
         skills_by_level = {}
         for s in skills_data:
             lv = s.get("level", 1)
             skills_by_level.setdefault(lv, []).append(s)
 
-        # Sort within each level by sequence_order
         for lv in skills_by_level:
             skills_by_level[lv].sort(key=lambda x: x.get("sequence_order", 0))
 
@@ -162,9 +101,6 @@ def generate_tree():
                     rows_to_insert
                 )
 
-                # For skills at levels below current_level that we marked
-                # 'learned', also insert into learned_skills so the
-                # Progress page can list them.
                 cursor.execute(
                     """
                     SELECT id FROM skill_tree
@@ -178,8 +114,9 @@ def generate_tree():
                     learned_rows = [(g.user_id, row["id"]) for row in learned_ids]
                     cursor.executemany(
                         """
-                        INSERT IGNORE INTO learned_skills (user_id, skill_id)
+                        INSERT INTO learned_skills (user_id, skill_id)
                         VALUES (%s, %s)
+                        ON CONFLICT (user_id, skill_id) DO NOTHING
                         """,
                         learned_rows
                     )
@@ -194,48 +131,16 @@ def generate_tree():
 
     except Exception as e:
         print(f"[skills/generate] error: {e}")
+        import traceback; print(traceback.format_exc())
         return jsonify({"error": "Could not generate skill tree"}), 500
 
     finally:
         conn.close()
 
 
-# ============================================================
-# GET /api/skills/tree
-# ============================================================
 @skills_bp.route("/skills/tree", methods=["GET"])
 @token_required
 def get_skill_tree():
-    """
-    Return the visible portion of the skill tree:
-      - All levels BELOW current_level (shown as learned/review)
-      - The CURRENT level (mix of unlocked/locked/learned)
-      - Levels ABOVE current are NOT returned at all
-
-    On success (200):
-        {
-          "current_level": 2,
-          "skills": [
-            {
-              "id": 5,
-              "level": 1,
-              "category": "Programming Basics",
-              "skill_name": "Variables",
-              "sequence_order": 1,
-              "status": "learned"
-            },
-            {
-              "id": 12,
-              "level": 2,
-              "category": "Data Structures",
-              "skill_name": "Arrays",
-              "sequence_order": 1,
-              "status": "unlocked"
-            },
-            ...
-          ]
-        }
-    """
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -284,38 +189,9 @@ def get_skill_tree():
         conn.close()
 
 
-# ============================================================
-# POST /api/skills/complete
-# ============================================================
 @skills_bp.route("/skills/complete", methods=["POST"])
 @token_required
 def complete_skill():
-    """
-    Mark a skill as 'learned' and unlock the next skill in sequence.
-    Called after a skill_test session is graded with total_score_percent >= 80.
-
-    Expected JSON body:
-        { "skill_id": 12 }
-
-    Logic (Section 4, step 8):
-      1. Mark skill_id as 'learned' in skill_tree
-      2. Insert into learned_skills
-      3. Find the next skill in sequence_order within the same level
-         - If found: set its status to 'unlocked'
-         - If not found (all skills in this level are learned): do nothing
-           here - the Level-Up Test trigger is handled by the frontend /
-           progress route based on all skills being learned.
-
-    On success (200):
-        {
-          "message": "Skill marked as learned",
-          "next_skill": {          # null if no more skills at this level
-            "id": 13,
-            "skill_name": "Linked Lists",
-            "sequence_order": 2
-          }
-        }
-    """
     data     = request.get_json(silent=True) or {}
     skill_id = data.get("skill_id")
 
@@ -326,7 +202,6 @@ def complete_skill():
     try:
         with conn.cursor() as cursor:
 
-            # Verify the skill belongs to this user and is currently unlocked
             cursor.execute(
                 """
                 SELECT id, level, sequence_order, career, status
@@ -347,17 +222,19 @@ def complete_skill():
             sequence_order = skill["sequence_order"]
             career         = skill["career"]
 
-            # --- Mark this skill as learned ---
             cursor.execute(
                 "UPDATE skill_tree SET status = 'learned' WHERE id = %s",
                 (skill_id,)
             )
             cursor.execute(
-                "INSERT IGNORE INTO learned_skills (user_id, skill_id) VALUES (%s, %s)",
+                """
+                INSERT INTO learned_skills (user_id, skill_id)
+                VALUES (%s, %s)
+                ON CONFLICT (user_id, skill_id) DO NOTHING
+                """,
                 (g.user_id, skill_id)
             )
 
-            # --- Find and unlock the next skill in this level ---
             cursor.execute(
                 """
                 SELECT id, skill_name, sequence_order
@@ -377,14 +254,8 @@ def complete_skill():
                     (next_skill["id"],)
                 )
 
-            # --- Regenerate the roadmap around whichever skill is ---
-            # --- unlocked now (could be next_skill, or none if the ---
-            # --- whole level just got finished) ---------------------
             cursor.execute(
-                """
-                SELECT subject, grade, gpa FROM academic_results
-                WHERE user_id = %s
-                """,
+                "SELECT subject, grade, gpa FROM academic_results WHERE user_id = %s",
                 (g.user_id,)
             )
             academics = cursor.fetchall()
@@ -421,8 +292,6 @@ def complete_skill():
             ver_row      = cursor.fetchone()
             next_version = (ver_row["max_v"] or 0) + 1
 
-        # --- AI call to regenerate the roadmap (separate connection, ---
-        # --- same pattern used by routes/roadmap.py and progress.py) ---
         try:
             rm = generate_roadmap(career, academics, visible_skill_tree, [], gaps)
             stored_payload = json.dumps({
@@ -439,11 +308,6 @@ def complete_skill():
             finally:
                 conn2.close()
         except Exception as e:
-            # Roadmap regeneration failing shouldn't block the skill
-            # completion from being recorded - log and continue. The
-            # student keeps their progress; the dashboard will just
-            # show a slightly stale roadmap until the next successful
-            # generation (e.g. their next skill test or level-up).
             print(f"[skills/complete] roadmap regen error: {e}")
 
         return jsonify({
@@ -453,6 +317,7 @@ def complete_skill():
 
     except Exception as e:
         print(f"[skills/complete] error: {e}")
+        import traceback; print(traceback.format_exc())
         return jsonify({"error": "Could not complete skill"}), 500
 
     finally:
