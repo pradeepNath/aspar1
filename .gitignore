@@ -1,0 +1,31 @@
+# --- Environment & secrets ---
+.env
+backend/.env
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+env/
+.venv/
+
+# --- Node / React ---
+node_modules/
+frontend/dist/
+frontend/build/
+.vite/
+
+# --- Logs ---
+*.log
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+
+# --- Editor ---
+.vscode/
+.idea/
+
+# --- Uploaded files (runtime, not source) ---
+backend/uploads/
