@@ -32,7 +32,7 @@ _client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 # Default model - can be overridden via .env (GROQ_MODEL=...) without
 # touching code, in case the supported Llama model name changes.
-_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+_MODEL = os.getenv("GROQ_MODEL")
 
 
 # ============================================================
