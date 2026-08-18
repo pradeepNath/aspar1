@@ -1,5 +1,10 @@
 """
 routes/grading.py
+------------------
+Updated to:
+1. Save concept field when storing questions
+2. Call analyze_skill_gaps() after every skill_test grading
+3. Pass skill_type to generate_test_questions for better questions
 """
 
 import json
@@ -8,6 +13,7 @@ from flask import Blueprint, request, jsonify, g
 from config.db import get_db_connection
 from utils.auth import token_required
 from services.groq_service import grade_answers, decide_placement_level
+from services.gap_analysis import analyze_skill_gaps
 
 grading_bp = Blueprint("grading", __name__)
 
@@ -39,11 +45,13 @@ def run_grading():
 
             test_type = session["test_type"]
             level     = session["level"]
+            skill_id  = session["skill_id"]
 
+            # Fetch questions — now includes concept field
             cursor.execute(
                 """
                 SELECT id, question_number, question_text, question_type,
-                       options, correct_answer
+                       options, correct_answer, concept
                 FROM quiz_questions
                 WHERE session_id = %s
                 ORDER BY question_number ASC
@@ -60,10 +68,10 @@ def run_grading():
 
             if not questions_rows:
                 return jsonify({"error": "No questions found for this session"}), 422
-
             if not answers_map:
                 return jsonify({"error": "No answers found - submit answers first"}), 422
 
+        # Build AI input
         questions_for_ai = []
         for q in questions_rows:
             questions_for_ai.append({
@@ -80,6 +88,7 @@ def run_grading():
                 "answer_text":     answers_map.get(q["id"], ""),
             })
 
+        # Grade with AI
         try:
             grading_result = grade_answers(questions_for_ai, answers_for_ai)
         except Exception as e:
@@ -91,6 +100,7 @@ def run_grading():
         ai_results          = grading_result.get("results", [])
         ai_results_map      = {r["question_number"]: r for r in ai_results}
 
+        # Save scores
         conn2 = get_db_connection()
         try:
             with conn2.cursor() as cursor:
@@ -98,7 +108,8 @@ def run_grading():
                     ai_r = ai_results_map.get(q["question_number"], {})
                     cursor.execute(
                         """
-                        INSERT INTO quiz_scores (session_id, question_id, score_out_of_10, feedback)
+                        INSERT INTO quiz_scores
+                            (session_id, question_id, score_out_of_10, feedback)
                         VALUES (%s, %s, %s, %s)
                         ON CONFLICT (session_id, question_id) DO UPDATE SET
                             score_out_of_10 = EXCLUDED.score_out_of_10,
@@ -112,6 +123,24 @@ def run_grading():
                         )
                     )
 
+                # ── Gap analysis for skill tests ──────────────────────
+                gap_data = None
+                if test_type == "skill_test" and skill_id:
+                    try:
+                        gap_data = analyze_skill_gaps(
+                            conn          = conn2,
+                            user_id       = g.user_id,
+                            skill_id      = skill_id,
+                            session_id    = session_id,
+                            questions_rows= questions_rows,
+                            ai_results_map= ai_results_map,
+                            overall_score = total_score_percent,
+                        )
+                    except Exception as e:
+                        print(f"[grading/run] gap analysis error: {e}")
+                        import traceback; print(traceback.format_exc())
+
+                # ── Placement level decision ──────────────────────────
                 placement_data = None
                 if test_type == "placement":
 
@@ -138,7 +167,9 @@ def run_grading():
                     scores_plain = [
                         {
                             "question_text":   q["question_text"],
-                            "score_out_of_10": ai_results_map.get(q["question_number"], {}).get("score_out_of_10", 0),
+                            "score_out_of_10": ai_results_map.get(
+                                q["question_number"], {}
+                            ).get("score_out_of_10", 0),
                         }
                         for q in questions_rows
                     ]
@@ -183,6 +214,7 @@ def run_grading():
         finally:
             conn2.close()
 
+        # Build response
         results_out = []
         for q in questions_rows:
             ai_r = ai_results_map.get(q["question_number"], {})
@@ -190,6 +222,7 @@ def run_grading():
                 "question_number": q["question_number"],
                 "question_text":   q["question_text"],
                 "question_type":   q["question_type"],
+                "concept":         q.get("concept"),
                 "student_answer":  answers_map.get(q["id"], ""),
                 "correct_answer":  q["correct_answer"],
                 "score_out_of_10": ai_r.get("score_out_of_10", 0),
@@ -208,11 +241,15 @@ def run_grading():
         if placement_data:
             response["placement"] = placement_data
 
+        if gap_data:
+            response["gap_analysis"] = gap_data
+
         return jsonify(response), 200
 
     except Exception as e:
+        import traceback
         print(f"[grading/run] unexpected error: {e}")
-        import traceback; print(traceback.format_exc())
+        print(traceback.format_exc())
         return jsonify({"error": "Grading failed unexpectedly"}), 500
 
     finally:

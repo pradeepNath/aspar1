@@ -1,5 +1,8 @@
 """
 routes/progress.py
+-------------------
+UPDATED: roadmap regeneration after level-up now uses the learner
+model + current_skill signature instead of the old flat params.
 """
 
 import json
@@ -9,20 +12,11 @@ from flask import Blueprint, request, jsonify, g
 from config.db import get_db_connection
 from utils.auth import token_required
 from services.groq_service import evaluate_progress, generate_roadmap
+from services.gap_analysis import get_learner_model
 
 progress_bp = Blueprint("progress", __name__)
 
 FAILURE_STREAK_THRESHOLD = 3
-
-
-def _make_serializable(obj):
-    if isinstance(obj, list):
-        return [_make_serializable(i) for i in obj]
-    if isinstance(obj, dict):
-        return {k: _make_serializable(v) for k, v in obj.items()}
-    if isinstance(obj, Decimal):
-        return float(obj)
-    return obj
 
 
 @progress_bp.route("/progress/evaluate", methods=["POST"])
@@ -77,7 +71,6 @@ def evaluate():
             prev_row       = cursor.fetchone()
             previous_score = float(prev_row["total_score"]) if prev_row else None
 
-            # Count consecutive failed attempts (score < 80%)
             cursor.execute(
                 """
                 SELECT total_score FROM progress_log
@@ -88,7 +81,6 @@ def evaluate():
                 (g.user_id,)
             )
             recent_scores = [r["total_score"] for r in cursor.fetchall()]
-
             consecutive_failures = 0
             for s in recent_scores:
                 if s is not None and float(s) < 80:
@@ -106,7 +98,6 @@ def evaluate():
                 (g.user_id,)
             )
             recent_statuses = [r["status"] for r in cursor.fetchall()]
-
             consecutive_no_improvement = 0
             for s in recent_statuses:
                 if s == "eased":
@@ -116,9 +107,7 @@ def evaluate():
 
         try:
             eval_result = evaluate_progress(
-                previous_score,
-                total_score_percent,
-                current_level,
+                previous_score, total_score_percent, current_level,
                 consecutive_no_improvement,
             )
         except Exception as e:
@@ -157,7 +146,6 @@ def evaluate():
 
                 if decision == "level_up" and current_level < 5:
                     new_level = current_level + 1
-
                     cursor.execute(
                         """
                         UPDATE skill_levels SET current_level = %s
@@ -165,7 +153,6 @@ def evaluate():
                         """,
                         (new_level, g.user_id, dream)
                     )
-
                     cursor.execute(
                         """
                         SELECT id FROM skill_tree
@@ -194,33 +181,28 @@ def evaluate():
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
-                        g.user_id,
-                        attempt_number,
-                        total_score_percent,
-                        previous_score,
-                        current_level,
-                        log_status,
-                        notes_str,
+                        g.user_id, attempt_number, total_score_percent,
+                        previous_score, current_level, log_status, notes_str,
                     )
                 )
 
+                # --- Regenerate roadmap with new signature ---
                 if decision in ("level_up", "ease_roadmap"):
+                    current_skill = None
                     cursor.execute(
                         """
-                        SELECT level, category, skill_name, sequence_order, status
+                        SELECT skill_name, skill_type, category
                         FROM skill_tree
-                        WHERE user_id = %s AND career = %s AND level <= %s
-                        ORDER BY level ASC, sequence_order ASC
+                        WHERE user_id = %s AND career = %s AND level = %s
+                          AND status = 'unlocked'
+                        ORDER BY sequence_order ASC
+                        LIMIT 1
                         """,
                         (g.user_id, dream, new_level)
                     )
-                    skill_tree = _make_serializable(list(cursor.fetchall()))
-
-                    cursor.execute(
-                        "SELECT subject, grade, gpa FROM academic_results WHERE user_id = %s",
-                        (g.user_id,)
-                    )
-                    academics = _make_serializable(list(cursor.fetchall()))
+                    cs_row = cursor.fetchone()
+                    if cs_row:
+                        current_skill = dict(cs_row)
 
                     cursor.execute(
                         "SELECT MAX(version) AS max_v FROM roadmaps WHERE user_id = %s",
@@ -229,16 +211,9 @@ def evaluate():
                     ver_row      = cursor.fetchone()
                     next_version = (ver_row["max_v"] or 0) + 1
 
-                    scores_ctx = _make_serializable([{
-                        "attempt":             attempt_number,
-                        "total_score_percent": total_score_percent,
-                        "level":               current_level,
-                    }])
-
                     try:
-                        rm = generate_roadmap(
-                            dream, academics, skill_tree, scores_ctx, knowledge_gaps
-                        )
+                        learner_model = get_learner_model(conn3, g.user_id)
+                        rm = generate_roadmap(dream, current_skill, learner_model)
                         stored_payload = json.dumps({
                             "overview":      rm.get("overview", ""),
                             "current_skill": rm.get("current_skill"),
@@ -249,6 +224,7 @@ def evaluate():
                         )
                     except Exception as e:
                         print(f"[progress/evaluate] roadmap regen error: {e}")
+                        import traceback; print(traceback.format_exc())
 
         finally:
             conn3.close()
@@ -263,8 +239,9 @@ def evaluate():
         }), 200
 
     except Exception as e:
+        import traceback
         print(f"[progress/evaluate] error: {e}")
-        import traceback; print(traceback.format_exc())
+        print(traceback.format_exc())
         return jsonify({"error": "Progress evaluation failed unexpectedly"}), 500
 
     finally:
@@ -282,7 +259,8 @@ def get_progress_log():
                 """
                 SELECT sp.dream_career, sl.current_level
                 FROM student_profiles sp
-                JOIN skill_levels sl ON sl.user_id = sp.user_id AND sl.career = sp.dream_career
+                JOIN skill_levels sl ON sl.user_id = sp.user_id
+                                     AND sl.career = sp.dream_career
                 WHERE sp.user_id = %s
                 """,
                 (g.user_id,)
@@ -301,7 +279,6 @@ def get_progress_log():
                 (g.user_id,)
             )
             log_rows = cursor.fetchall()
-
             for row in log_rows:
                 if row.get("created_at"):
                     row["created_at"] = row["created_at"].isoformat()
@@ -321,7 +298,6 @@ def get_progress_log():
                 (g.user_id,)
             )
             learned = cursor.fetchall()
-
             for row in learned:
                 if row.get("learned_at"):
                     row["learned_at"] = row["learned_at"].isoformat()

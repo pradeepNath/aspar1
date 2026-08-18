@@ -257,41 +257,56 @@ Respond with ONLY a JSON object shaped like:
 #    Input:  profile + starting level
 #    Output: full 5-level categorized skill tree (JSON)
 # ============================================================
+"""
+REPLACE these two functions in backend/services/groq_service.py
+"""
+
 def generate_skill_tree(dream, academics, placement_level):
     """
-    Generate the FULL 5-level skill tree for the student's dream career,
-    ONE TIME, in a single call (per the design doc).
+    Generate the full 5-level skill tree WITH:
+    - skill_type classification (conceptual/mathematical/practical/mixed)
+    - skill_category (core — all skills in universal tree are core)
+    - dependencies between skills (which skill needs which prerequisite)
 
-    Args:
-        dream:            dream career string
-        academics:        list of academic result dicts (may be empty)
-        placement_level:  int, 1-3, from decide_placement_level()
+    Works for ANY career — not just IT.
+    AI classifies skill types based on career context.
 
     Returns:
-        A flat list of skill dicts covering ALL 5 levels:
-        [
-          {
-            "level": 1,
-            "category": "Programming Basics",
-            "skill_name": "Variables",
-            "sequence_order": 1
-          },
-          ...
-        ]
+        {
+          "skills": [
+            {
+              "level": 1,
+              "category": "Foundations",
+              "skill_name": "Introduction to HR",
+              "sequence_order": 1,
+              "skill_type": "conceptual",
+              "skill_category": "core"
+            },
+            ...
+          ],
+          "dependencies": [
+            {"skill_name": "OOP", "depends_on": "Python Basics"},
+            {"skill_name": "ML Models", "depends_on": "Linear Algebra"},
+            {"skill_name": "ML Models", "depends_on": "Statistics"},
+            ...
+          ]
+        }
 
-        The route layer is responsible for:
-          - storing every row in skill_tree
-          - setting status='unlocked' for the first (by sequence_order)
-            skill at the student's current level, and 'locked' for the
-            rest of that level and below, per the unlocking rules.
-          - NOT returning rows where level > current_level to the
-            frontend at all.
+    skill_type must be one of:
+      conceptual  — understanding theories, principles, definitions
+      mathematical — calculations, formulas, quantitative reasoning
+      practical   — hands-on tasks, real-world application, procedures
+      mixed       — combination of the above
+
+    dependencies is a flat list of pairs. A skill can have multiple
+    prerequisites (multiple entries with the same skill_name).
+    Dependencies must only reference skills that exist in the skills list.
     """
     system_prompt = (
-        "You are a curriculum designer for ASPAR. You design complete, "
-        "categorized 5-level skill trees for a given career path, "
-        "progressing logically from beginner (Level 1) to professional "
-        "(Level 5). You ALWAYS respond with strict JSON only."
+        "You are a curriculum designer for ASPAR. You design complete "
+        "5-level skill trees for ANY career — not just tech. You classify "
+        "each skill by type and define dependency relationships between skills. "
+        "You ALWAYS respond with strict JSON only."
     )
 
     user_prompt = f"""
@@ -299,64 +314,77 @@ Dream career: "{dream}"
 Academic background (may be empty): {json.dumps(academics)}
 Student's placement level: {placement_level} (1-3)
 
-Generate a COMPLETE skill tree covering ALL 5 levels (1 through 5) for
-this career. Organize skills into logical categories per level
-(e.g. for "Software Developer", Level 1 might include category
-"Programming Basics" with skills "Variables", "Loops", "Functions").
+Generate a COMPLETE skill tree covering ALL 5 levels for this career.
 
 Rules:
-- Cover all levels 1-5, even levels above the student's current level -
-  the full tree is generated once and revealed gradually later.
-- Each skill needs: level (1-5), category, skill_name, and
-  sequence_order (the order it should be learned within that level,
-  starting at 1 for each level).
-- Aim for roughly 4-8 skills per level, grouped into 1-3 categories.
+1. Cover levels 1-5. Aim for 4-8 skills per level in 1-3 categories.
+2. For EACH skill, classify skill_type as exactly one of:
+   - "conceptual"   : understanding theories, principles, definitions, history
+   - "mathematical" : calculations, formulas, statistics, quantitative analysis
+   - "practical"    : hands-on tasks, procedures, real-world application, tools
+   - "mixed"        : requires both theory AND practical/mathematical elements
+   
+   Base classification on the career context — not just the skill name.
+   A "Patient Assessment" skill for a Nurse is "practical".
+   A "Financial Ratios" skill for an Accountant is "mathematical".
+   A "HR Law Fundamentals" skill for an HR Manager is "conceptual".
 
-Respond with ONLY a JSON array of skill objects shaped like:
+3. For dependencies, list pairs where one skill MUST come before another.
+   - Only list dependencies within the same career path
+   - A skill CAN depend on multiple prerequisites
+   - Do NOT create circular dependencies
+   - Only reference skill_names that exist in your skills list
+   - Focus on meaningful prerequisites, not every possible relationship
+
+Respond with ONLY a JSON object shaped like:
 {{
-  "level": 1,
-  "category": "Programming Basics",
-  "skill_name": "Variables",
-  "sequence_order": 1
+  "skills": [
+    {{
+      "level": 1,
+      "category": "Category Name",
+      "skill_name": "Skill Name",
+      "sequence_order": 1,
+      "skill_type": "conceptual",
+      "skill_category": "core"
+    }}
+  ],
+  "dependencies": [
+    {{"skill_name": "Advanced Skill", "depends_on": "Basic Skill"}},
+    {{"skill_name": "Advanced Skill", "depends_on": "Another Basic Skill"}}
+  ]
 }}
 """
 
     return _call_groq(system_prompt, user_prompt, expect_json=True)
 
 
-# ============================================================
-# 4. generate_test_questions
-#    Input:  level, test type, optional skill name
-#    Output: N questions per the Section 7 difficulty table
-# ============================================================
-def generate_test_questions(dream, academics, level, test_type, skill_name=None):
+def generate_test_questions(dream, academics, level, test_type, skill_name=None, skill_type=None):
     """
     Generate questions for a LEVEL-UP or SKILL test.
+    NOW INCLUDES: concept field on each question for gap analysis.
+
+    Each question has a "concept" field identifying which specific
+    sub-topic within the skill it is testing. This is what enables
+    gap analysis — instead of just "72% overall", we get:
+      "Functions: 90%, OOP: 45%, Exception Handling: 50%"
 
     Args:
         dream:      dream career string
-        academics:  list of academic result dicts (may be empty)
-        level:      int, 1-5, the level these questions belong to
+        academics:  list of academic result dicts
+        level:      int, 1-5
         test_type:  "level_up" or "skill_test"
-        skill_name: required when test_type == "skill_test" - the
-                    specific skill being tested (e.g. "Linked Lists")
+        skill_name: required for skill_test
+        skill_type: optional — "conceptual"/"mathematical"/"practical"/"mixed"
+                    used to adjust question style
 
-    Returns:
-        A list of question dicts, sized and shaped according to the
-        Section 7 difficulty table for `level`:
-            Level 1 -> 5 questions, mostly MCQ
-            Level 2 -> 6 questions, MCQ + some theory
-            Level 3 -> 7-8 questions, balanced, more technical
-            Level 4 -> 8-9 questions, mostly theory, scenario-based
-            Level 5 -> 10 questions, all theory, professional scenarios
-
-        Each item shaped like:
+    Returns list of question dicts, each with a "concept" field:
         {
           "question_number": 1,
           "question_text": "...",
-          "question_type": "mcq" | "theory",
-          "options": [...] | null,
-          "correct_answer": "..." | null
+          "question_type": "mcq",
+          "concept": "Probability Distributions",
+          "options": [...],
+          "correct_answer": "..."
         }
     """
     if test_type not in ("level_up", "skill_test"):
@@ -364,7 +392,6 @@ def generate_test_questions(dream, academics, level, test_type, skill_name=None)
     if test_type == "skill_test" and not skill_name:
         raise ValueError('skill_name is required when test_type == "skill_test"')
 
-    # Section 7 difficulty table, expressed as instructions for the model.
     difficulty_guide = {
         1: "5 questions total, mostly MCQ.",
         2: "6 questions total, MCQ plus some theory.",
@@ -375,43 +402,66 @@ def generate_test_questions(dream, academics, level, test_type, skill_name=None)
     if level not in difficulty_guide:
         raise ValueError("level must be between 1 and 5")
 
+    # Adjust question style based on skill type
+    style_hint = ""
+    if skill_type == "mathematical":
+        style_hint = "Focus on calculation, formula application, and quantitative reasoning questions."
+    elif skill_type == "practical":
+        style_hint = "Focus on scenario-based, procedure-following, and real-world application questions."
+    elif skill_type == "conceptual":
+        style_hint = "Focus on definition, explanation, and principle-understanding questions."
+    else:
+        style_hint = "Mix conceptual understanding with practical application questions."
+
     system_prompt = (
         "You are an exam-question generator for ASPAR. You design fair, "
-        "level-appropriate questions matching a strict difficulty "
-        "specification. You ALWAYS respond with strict JSON only."
+        "level-appropriate questions for ANY career. Each question MUST "
+        "include a 'concept' field naming the specific sub-topic it tests. "
+        "You ALWAYS respond with strict JSON only."
     )
 
     focus_line = (
-        f'This is a SKILL TEST focused specifically on the skill: "{skill_name}".'
+        f'This is a SKILL TEST focused on: "{skill_name}" ({skill_type or "mixed"} skill).'
         if test_type == "skill_test"
-        else "This is a LEVEL-UP TEST covering the breadth of this level."
+        else "This is a LEVEL-UP TEST covering breadth of this level."
     )
 
     user_prompt = f"""
 Dream career: "{dream}"
-Academic background (may be empty): {json.dumps(academics)}
+Academic background: {json.dumps(academics)}
 Level: {level}
 Test type: {test_type}
 {focus_line}
+Question style: {style_hint}
+Difficulty: {difficulty_guide[level]}
 
-Difficulty/question-count requirement for this level:
-{difficulty_guide[level]}
+CRITICAL: Every question MUST have a "concept" field.
+The concept is the specific sub-topic this question tests.
+Example for a Statistics skill:
+  - concept: "Probability Distributions"
+  - concept: "Hypothesis Testing"
+  - concept: "Bayes Theorem"
+  - concept: "Descriptive Statistics"
 
-Rules:
-- Follow the question count and type-mix requirement exactly.
-- For "mcq" questions, include exactly 4 options and a correct_answer
-  that exactly matches one of the options.
-- For "theory" questions, set "options" and "correct_answer" to null.
-- Number questions sequentially starting at 1.
+Different questions in the same skill test should test DIFFERENT concepts
+so we can identify exactly where the student is strong or weak.
 
-Respond with ONLY a JSON array of question objects shaped like:
-{{
-  "question_number": 1,
-  "question_text": "...",
-  "question_type": "mcq",
-  "options": ["...", "...", "...", "..."],
-  "correct_answer": "..."
-}}
+Rules for questions:
+- For "mcq": 4 options, correct_answer matches one option exactly
+- For "theory": options and correct_answer are null
+- Number sequentially from 1
+
+Respond with ONLY a JSON array:
+[
+  {{
+    "question_number": 1,
+    "question_text": "...",
+    "question_type": "mcq",
+    "concept": "Specific Sub-Topic Name",
+    "options": ["...", "...", "...", "..."],
+    "correct_answer": "..."
+  }}
+]
 """
 
     return _call_groq(system_prompt, user_prompt, expect_json=True)
@@ -497,100 +547,131 @@ Respond with ONLY a JSON object shaped like:
 #    Input:  full context (dream, academics, skill tree, scores, gaps)
 #    Output: roadmap text + resource-type suggestions
 # ============================================================
-def generate_roadmap(dream, academics, skill_tree, scores, gaps):
+def generate_roadmap(dream, current_skill, learner_model):
     """
-    Generate (or regenerate) the student's roadmap.
-
-    IMPORTANT (Section 1 / 10 of the design doc): ASPAR is a Roadmap
-    System, not a Recommendation System. The roadmap must say WHAT to
-    learn and WHAT TYPE of resource to look for - it must NEVER give
-    specific links, course names, or step-by-step "how to" instructions.
-
-    STRUCTURE: rather than one long paragraph trying to cover every
-    skill in the level at once, the roadmap gives a brief overview of
-    the level, then a focused explanation about ONLY the student's
-    current unlocked skill (the single skill they are meant to be
-    studying right now) - what it is, why it's next, and what to focus
-    on. This is the skill with status == "unlocked" in the skill_tree
-    (sequence_order determines which one that is). If no skill is
-    currently unlocked (e.g. the whole level is already learned), the
-    "current_skill" field is omitted.
-
+    Generate a personalized roadmap focused on the student's current
+    unlocked skill, using their full learner model as evidence.
+ 
+    IMPORTANT: ASPAR is a Roadmap System, not a Recommendation System.
+    Say WHAT to learn and WHAT TYPE of resource to seek — never give
+    specific links, course names, or step-by-step tutorials.
+ 
     Args:
-        dream:      dream career string
-        academics:  list of academic result dicts (may be empty)
-        skill_tree: list of skill dicts visible to the student
-                    (current level + below only - see generate_skill_tree)
-        scores:     recent test score history, e.g.
-                    [{"test_type": "placement", "total_score_percent": 75}]
-        gaps:       list of knowledge-gap topic strings from grade_answers()
-
+        dream:          dream career string
+        current_skill:  dict — the skill the student should focus on now
+                         {"skill_name": "...", "skill_type": "...",
+                          "category": "..."}
+                         or None if no skill is currently unlocked
+        learner_model:  dict from gap_analysis.get_learner_model()
+                         Contains: skill_mastery, strong_skills,
+                         weak_skills, persistent_gaps, academic_trend,
+                         overall_trend, passion_statement, pass_rate
+ 
     Returns:
         {
-          "overview": "1-2 sentence high-level orientation for the
-                        student's current level as a whole.",
+          "overview": "1-2 sentence orientation for current level",
           "current_skill": {
-            "skill_name": "Employment Laws and Regulations",
-            "why_now": "1-2 sentences on why this specific skill is next -
-                        connects to a prerequisite already learned, or to
-                        a knowledge gap, if relevant.",
-            "what_to_learn": "2-3 sentences naming the specific sub-topics
-                               or concepts inside this skill to focus on.",
-            "resource_types": ["official documentation", "video tutorials"]
+            "skill_name": "...",
+            "why_now": "...",
+            "what_to_learn": "...",
+            "resource_types": ["...", "..."]
           }
         }
-
-        "current_skill" describes ONLY the single skill with
-        status == "unlocked" at the student's current level - never the
-        whole remaining list. This keeps the roadmap focused on exactly
-        what the student should be doing right now.
+ 
+    Equity in action: if learner_model shows weak_skills=["Statistics"]
+    and current_skill is "Supervised Learning" (which depends on
+    Statistics), the roadmap explicitly connects the two and tells
+    THIS student to revisit Statistics fundamentals first — a student
+    with strong Statistics skips straight to Supervised Learning content.
     """
     system_prompt = (
         "You are a mentor for ASPAR, a ROADMAP system - not a "
         "recommendation system. You tell students WHAT to learn next and "
-        "WHAT KIND of resource to look for, focused tightly on the single "
-        "skill they should be studying right now. You NEVER give specific "
-        "links, named courses/channels, or step-by-step tutorials - only "
-        "general resource TYPES (e.g. 'official documentation', "
-        "'interactive coding platforms', 'video tutorials', 'practice "
-        "problem sites'). You ALWAYS respond with strict JSON only."
+        "WHAT KIND of resource to look for, focused on the single skill "
+        "they should study right now. You practice EQUITY: you use the "
+        "student's actual demonstrated strengths and weaknesses to decide "
+        "what they specifically need - not a generic template every "
+        "student gets. Two students at the same level with different "
+        "skill histories should receive noticeably different guidance. "
+        "You NEVER give specific links, named courses, or step-by-step "
+        "tutorials - only general resource TYPES. "
+        "You ALWAYS respond with strict JSON only."
     )
-
+ 
+    if not current_skill:
+        current_skill_line = "No skill is currently unlocked (student has completed all skills at this level)."
+    else:
+        current_skill_line = (
+            f"Current skill to focus on: \"{current_skill['skill_name']}\" "
+            f"(type: {current_skill.get('skill_type', 'mixed')}, "
+            f"category: {current_skill.get('category', 'General')})"
+        )
+ 
+    skill_mastery_lines = "\n".join(
+        f"  - {s['skill_name']} ({s['skill_type']}): {s['score']}% "
+        f"[{s['trend']}, attempt #{s['attempts']}]"
+        for s in learner_model.get("skill_mastery", [])
+    ) or "  No skill tests taken yet."
+ 
     user_prompt = f"""
 Dream career: "{dream}"
-Academic background (may be empty): {json.dumps(academics)}
-Visible skill tree (current level and below): {json.dumps(skill_tree)}
-Recent score history: {json.dumps(scores)}
-Known knowledge gaps: {json.dumps(gaps)}
-
-Build a roadmap focused on the student's CURRENT level and, specifically,
-their CURRENT SKILL:
-
-1. Write a short "overview" (1-2 sentences max) that orients the student
-   at their current level in general terms.
-
-2. Find the ONE skill in the skill_tree with status == "unlocked" at the
-   student's current level (this is the specific skill they are meant to
-   be studying right now - not any other skill in the level). Write a
-   "current_skill" object containing:
-   - "skill_name": copy the exact skill_name from the skill tree.
-   - "why_now": 1-2 sentences on why this specific skill is next - connect
-     it to a prerequisite they've already learned, or to a knowledge gap,
-     if relevant. If nothing specific applies, briefly say why it fits the
-     natural learning sequence.
-   - "what_to_learn": 2-3 sentences naming the actual sub-topics or
-     concepts inside THIS skill the student should focus on.
-   - "resource_types": 2-4 short general resource TYPES suited to THIS
-     specific skill (never specific sites, course names, channels, or
-     step-by-step instructions).
-
-   If no skill currently has status == "unlocked" (e.g. every skill in
-   the level is already learned), omit "current_skill" entirely.
-
-Keep "current_skill" concise - a student should be able to read it in
-under 15 seconds and know exactly what to do next.
-
-Respond with ONLY a JSON object shaped like:
+Student's passion statement: "{learner_model.get('passion_statement', '')}"
+{current_skill_line}
+ 
+STUDENT'S FULL EVIDENCE (this is what makes the roadmap equitable):
+ 
+Per-skill test scores:
+{skill_mastery_lines}
+ 
+Strong skills (>=80%): {', '.join(learner_model.get('strong_skills', [])) or 'None yet'}
+Weak skills (<60%): {', '.join(learner_model.get('weak_skills', [])) or 'None yet'}
+Persistent gaps (struggled across multiple attempts): {', '.join(learner_model.get('persistent_gaps', [])) or 'None'}
+ 
+Academic trend: {learner_model.get('academic_trend', 'insufficient_data')}
+Overall learning trend: {learner_model.get('overall_trend', 'stable')}
+Test pass rate: {learner_model.get('pass_rate', 0)}%
+ 
+INSTRUCTIONS:
+ 
+1. Write "overview" (1-2 sentences) orienting the student at their
+   current level in general terms.
+ 
+2. Write "current_skill" object about ONLY the current unlocked skill:
+ 
+   - "skill_name": exact name from current_skill above
+   - "why_now": 1-2 sentences. CRITICALLY: if any of the student's
+     weak_skills or persistent_gaps are prerequisites or related to
+     this current skill, name that connection explicitly. Example:
+     "Since Supervised Learning relies heavily on probability theory,
+     and your Statistics score of 43% shows this is a gap, strengthening
+     that foundation first will make this skill much easier to grasp."
+     If no weak skills are relevant, explain why this skill fits the
+     natural progression instead.
+ 
+   - "what_to_learn": 2-3 sentences. Adjust content based on
+     skill_type: for "mathematical" skills emphasize formulas and
+     calculation practice; for "practical" skills emphasize hands-on
+     exercises and real scenarios; for "conceptual" skills emphasize
+     reading and understanding principles; for "mixed" balance both.
+     If the student has a relevant persistent_gap, explicitly say to
+     address that specific sub-topic first.
+ 
+   - "resource_types": 2-4 general resource types matched to skill_type.
+     Mathematical -> "practice problem sets", "formula reference sheets"
+     Practical -> "hands-on exercises", "case studies", "simulations"
+     Conceptual -> "official documentation", "explanatory articles"
+ 
+3. If the student's overall_trend is "declining", acknowledge it
+   gently and suggest revisiting fundamentals before pushing forward.
+   If "improving", acknowledge their progress genuinely.
+ 
+4. If passion_statement is provided, connect the current skill to
+   their stated motivation in one natural sentence.
+ 
+Keep it concise - readable in under 20 seconds. Never use bullet
+points inside the text fields - flowing sentences only.
+ 
+Respond with ONLY a JSON object:
 {{
   "overview": "...",
   "current_skill": {{
@@ -600,9 +681,13 @@ Respond with ONLY a JSON object shaped like:
     "resource_types": ["...", "..."]
   }}
 }}
+ 
+If current_skill_line says no skill is unlocked, omit "current_skill"
+entirely and just return {{"overview": "..."}}.
 """
-
+ 
     return _call_groq(system_prompt, user_prompt, expect_json=True)
+ 
 
 
 # ============================================================

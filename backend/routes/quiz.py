@@ -1,5 +1,11 @@
 """
 routes/quiz.py
+---------------
+UPDATED:
+1. Saves the "concept" field on each question (for gap analysis)
+2. Passes skill_type to generate_test_questions() for skill tests
+   (adjusts question style: math skills get calculation questions,
+   practical skills get scenario questions, etc.)
 """
 
 from flask import Blueprint, request, jsonify, g
@@ -22,7 +28,6 @@ def start_quiz():
 
     if test_type not in ("placement", "level_up", "skill_test"):
         return jsonify({"error": "test_type must be placement, level_up, or skill_test"}), 400
-
     if test_type == "skill_test" and not skill_id:
         return jsonify({"error": "skill_id is required for skill_test"}), 400
 
@@ -37,7 +42,6 @@ def start_quiz():
             profile = cursor.fetchone()
             if not profile:
                 return jsonify({"error": "Please set your dream career first"}), 422
-
             dream = profile["dream_career"]
 
             cursor.execute(
@@ -53,17 +57,39 @@ def start_quiz():
             level_row = cursor.fetchone()
             current_level = level_row["current_level"] if level_row else 1
 
+            # --- 4-hour cooldown check for skill tests ---
             skill_name = None
+            skill_type = None
             if test_type == "skill_test":
                 cursor.execute(
-                    "SELECT skill_name, level FROM skill_tree WHERE id = %s AND user_id = %s",
+                    "SELECT skill_name, skill_type, level FROM skill_tree WHERE id = %s AND user_id = %s",
                     (skill_id, g.user_id)
                 )
                 skill_row = cursor.fetchone()
                 if not skill_row:
                     return jsonify({"error": "Skill not found"}), 404
                 skill_name    = skill_row["skill_name"]
+                skill_type    = skill_row["skill_type"]
                 current_level = skill_row["level"]
+
+                # Check cooldown from last_attempt_log
+                cursor.execute(
+                    "SELECT last_attempt_at FROM last_attempt_log WHERE user_id = %s AND skill_id = %s",
+                    (g.user_id, skill_id)
+                )
+                attempt_row = cursor.fetchone()
+                if attempt_row:
+                    from datetime import datetime, timezone, timedelta
+                    last_attempt = attempt_row["last_attempt_at"]
+                    if last_attempt.tzinfo is None:
+                        last_attempt = last_attempt.replace(tzinfo=timezone.utc)
+                    elapsed   = datetime.now(timezone.utc) - last_attempt
+                    remaining = timedelta(hours=4) - elapsed
+                    if remaining.total_seconds() > 0:
+                        minutes_left = int(remaining.total_seconds() / 60)
+                        return jsonify({
+                            "error": f"Please wait {minutes_left} more minute(s) before retrying this skill test."
+                        }), 429
 
             attempt_number = 1
             if test_type == "level_up":
@@ -83,17 +109,17 @@ def start_quiz():
             elif test_type == "skill_test":
                 cleanup_skill_test_session(conn, g.user_id, skill_id)
 
+            # --- Generate questions ---
             if test_type == "placement":
                 questions_data = generate_placement_questions(dream, academics)
             else:
                 questions_data = generate_test_questions(
-                    dream, academics, current_level, test_type, skill_name
+                    dream, academics, current_level, test_type, skill_name, skill_type
                 )
 
             if not isinstance(questions_data, list) or len(questions_data) == 0:
                 return jsonify({"error": "AI did not return valid questions. Please try again."}), 500
 
-            # --- Create quiz_session — use RETURNING id for PostgreSQL ---
             cursor.execute(
                 """
                 INSERT INTO quiz_sessions (user_id, test_type, level, skill_id, attempt_number)
@@ -104,12 +130,11 @@ def start_quiz():
             )
             session_id = cursor.fetchone()["id"]
 
-            # --- Insert questions — use RETURNING id for PostgreSQL ---
+            # --- Insert questions WITH concept field ---
             question_ids = []
             for q in questions_data:
                 options_json   = None
                 correct_answer = None
-
                 if q.get("question_type") == "mcq":
                     options_json   = json.dumps(q.get("options") or [])
                     correct_answer = q.get("correct_answer")
@@ -117,8 +142,9 @@ def start_quiz():
                 cursor.execute(
                     """
                     INSERT INTO quiz_questions
-                        (session_id, question_text, question_type, options, correct_answer, question_number)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                        (session_id, question_text, question_type, options,
+                         correct_answer, question_number, concept)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (
@@ -128,9 +154,22 @@ def start_quiz():
                         options_json,
                         correct_answer,
                         q.get("question_number", 0),
+                        q.get("concept", "General"),
                     )
                 )
                 question_ids.append(cursor.fetchone()["id"])
+
+            # --- Record this attempt for cooldown tracking ---
+            if test_type == "skill_test":
+                cursor.execute(
+                    """
+                    INSERT INTO last_attempt_log (user_id, skill_id, last_attempt_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (user_id, skill_id) DO UPDATE SET
+                        last_attempt_at = NOW()
+                    """,
+                    (g.user_id, skill_id)
+                )
 
             format_qs = []
             for i, q in enumerate(questions_data):
@@ -150,8 +189,9 @@ def start_quiz():
         }), 201
 
     except Exception as e:
+        import traceback
         print(f"[quiz/start] error: {e}")
-        import traceback; print(traceback.format_exc())
+        print(traceback.format_exc())
         return jsonify({"error": "Could not start quiz. Please try again."}), 500
 
     finally:
@@ -167,7 +207,6 @@ def submit_quiz():
 
     if not session_id:
         return jsonify({"error": "session_id is required"}), 400
-
     if not isinstance(answers, list) or len(answers) == 0:
         return jsonify({"error": "answers must be a non-empty list"}), 400
 
@@ -202,10 +241,7 @@ def submit_quiz():
 
                 rows_to_insert.append((session_id, q_id, ans_text))
 
-            cursor.execute(
-                "DELETE FROM quiz_answers WHERE session_id = %s",
-                (session_id,)
-            )
+            cursor.execute("DELETE FROM quiz_answers WHERE session_id = %s", (session_id,))
             cursor.executemany(
                 "INSERT INTO quiz_answers (session_id, question_id, answer_text) VALUES (%s, %s, %s)",
                 rows_to_insert
