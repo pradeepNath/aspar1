@@ -45,7 +45,7 @@ function QuestionCard({ q, answer, onAnswer }) {
 export default function Quiz() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { test_type, skill_id } = location.state || {};
+  const { test_type, skill_id, adaptive_skill_id } = location.state || {};
   const [phase,   setPhase]   = useState(PHASES.LOADING);
   const [session, setSession] = useState(null);
   const [answers, setAnswers] = useState({});
@@ -58,7 +58,9 @@ export default function Quiz() {
     setPhase(PHASES.LOADING);
     setStatus(test_type === "skill_test" ? "Generating skill test…" : "Generating level-up test…");
     try {
-      const body = { test_type }; if (skill_id) body.skill_id = skill_id;
+      const body = { test_type };
+      if (skill_id) body.skill_id = skill_id;
+      if (adaptive_skill_id) body.adaptive_skill_id = adaptive_skill_id;
       const res  = await api.post("/quiz/start", body);
       setSession(res.data);
       const init = {}; res.data.questions.forEach(q => { init[q.id] = ""; });
@@ -93,7 +95,7 @@ export default function Quiz() {
         const pr = await api.post("/progress/evaluate", { session_id:session.session_id, total_score_percent:grading.total_score_percent, knowledge_gaps:grading.knowledge_gaps||[] });
         progressResult = pr.data;
       }
-      navigate("/grading", { state:{ grading, test_type, skill_id, skillResult, progressResult } });
+      navigate("/grading", { state:{ grading, test_type, skill_id, adaptive_skill_id, skillResult, progressResult } });
     } catch (err) {
       setError(err.response?.data?.error || "Submission failed."); setPhase(PHASES.ANSWERING);
     }

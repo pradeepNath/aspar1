@@ -28,6 +28,7 @@ export default function SkillTree() {
 
   const currentLevel = skillData?.current_level || 1;
   const skills       = skillData?.skills || [];
+  const personalizedSubskills = skillData?.personalized_subskills || [];
 
   // Group by level → category
   const byLevel = {};
@@ -118,6 +119,72 @@ export default function SkillTree() {
                             Take test →
                           </button>
                         )}
+
+                        {/* Learner-specific remediation subskills. These are
+                            returned separately by /skills/tree and must not
+                            be mixed into the shared core skill list. */}
+                        {personalizedSubskills
+                          .filter(sub => sub.parent_skill_id === s.id)
+                          .map(sub => (
+                            <div
+                              key={`subskill-${sub.id}`}
+                              style={{
+                                marginTop:4,
+                                padding:"10px 11px",
+                                borderRadius:8,
+                                background:"rgba(245,158,11,0.08)",
+                                border:"1px solid rgba(245,158,11,0.25)",
+                              }}
+                            >
+                              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
+                                <div>
+                                  <div style={{ fontSize:"0.65rem", fontWeight:800, letterSpacing:"0.08em", color:"#fbbf24", marginBottom:4 }}>
+                                    PERSONALIZED SUBSKILL
+                                  </div>
+                                  <div style={{ fontWeight:700, fontSize:"0.82rem", color:"#fff", lineHeight:1.3 }}>
+                                    {sub.skill_name}
+                                  </div>
+                                  {sub.concept && (
+                                    <div style={{ fontSize:"0.72rem", color:"var(--text-3)", marginTop:4 }}>
+                                      Gap: {sub.concept}
+                                    </div>
+                                  )}
+                                </div>
+                                <span style={{ fontSize:"0.72rem", color: sub.status === "learned" ? "var(--success)" : "#fbbf24", flexShrink:0 }}>
+                                  {sub.status === "learned" ? "✓" : "⚠"}
+                                </span>
+                              </div>
+
+                              {sub.reason && (
+                                <p style={{ fontSize:"0.72rem", lineHeight:1.45, color:"var(--text-2)", margin:"7px 0 8px" }}>
+                                  {sub.reason}
+                                </p>
+                              )}
+
+                              {sub.status === "unlocked" && (
+                                <button
+                                  className="btn btn-sm"
+                                  style={{
+                                    marginTop:2,
+                                    fontSize:"0.74rem",
+                                    padding:"6px 11px",
+                                    background:"rgba(245,158,11,0.15)",
+                                    border:"1px solid rgba(245,158,11,0.35)",
+                                    color:"#fcd34d",
+                                  }}
+                                  onClick={() => navigate("/quiz", {
+                                    state:{
+                                      test_type:"skill_test",
+                                      skill_id:s.id,
+                                      adaptive_skill_id:sub.id,
+                                    },
+                                  })}
+                                >
+                                  Practice subskill →
+                                </button>
+                              )}
+                            </div>
+                          ))}
                       </div>
                     );
                   })}
