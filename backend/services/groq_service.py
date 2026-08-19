@@ -20,33 +20,17 @@ Every function can be called directly with dummy/sample inputs (e.g. in
 a Python shell or a quick test script) to see exactly what it returns -
 useful for debugging each AI step in isolation before wiring it into a
 route.
-
-------------------------------------------------------------
-KEY ROTATION (added)
-------------------------------------------------------------
-ASPAR uses multiple Groq API keys (GROQ_API_KEY_1 .. GROQ_API_KEY_5 in
-.env, from separate Groq accounts) instead of a single GROQ_API_KEY,
-to multiply the available request/token budget. Groq enforces rate
-limits at the ORGANIZATION level, so each key must come from a
-separate account for this to actually help - multiple keys under one
-account share the same pool and rotation would do nothing.
-
-All 8 public functions still funnel through _call_groq(), so this
-rotation logic lives in exactly one place (_create_with_rotation).
-On a 429 (RateLimitError) or 401 (AuthenticationError), the current
-key is put on cooldown and the pool rotates to the next available
-key, retrying up to once per key in the pool. A transient network
-failure (APIConnectionError) also rotates, on a short cooldown, since
-it isn't necessarily this key's fault but a fresh attempt costs
-little.
 """
 
 import os
 import json
 import time
+import logging
 import itertools
 from groq import Groq, RateLimitError, AuthenticationError, APIConnectionError
-
+ 
+logger = logging.getLogger("groq_service")
+ 
 # ============================================================
 # Key rotation pool
 # ============================================================
@@ -54,13 +38,20 @@ GROQ_KEYS = [
     os.environ[k] for k in sorted(os.environ)
     if k.startswith("GROQ_API_KEY")
 ]
-
+ 
 if not GROQ_KEYS:
     raise RuntimeError(
         "No GROQ_API_KEY_* found in environment. "
         "Set GROQ_API_KEY_1 (at minimum) in .env."
     )
-
+ 
+ 
+def _mask(key):
+    """Last 6 chars only - enough to tell keys apart in logs without
+    ever printing a usable key."""
+    return f"...{key[-6:]}" if key else "None"
+ 
+ 
 # Per-key cooldown timestamps - a key that just hit a rate limit or
 # failed auth is skipped until its cooldown expires (or forever, for
 # a dead/invalid key).
@@ -68,15 +59,20 @@ _cooldowns = {key: 0 for key in GROQ_KEYS}
 _key_cycle = itertools.cycle(GROQ_KEYS)
 _current_key = next(_key_cycle)
 _client = Groq(api_key=_current_key)
-
+ 
+logger.info(
+    "groq_service: loaded %d key(s), starting on %s",
+    len(GROQ_KEYS), _mask(_current_key),
+)
+ 
 # Default model - can be overridden via .env (GROQ_MODEL=...) without
 # touching code, in case the supported model name changes again.
 # NOTE: llama-3.3-70b-versatile was deprecated by Groq (announced
 # June 17 2026); ASPAR now runs on openai/gpt-oss-120b, Groq's
 # recommended replacement.
 _MODEL = os.getenv("GROQ_MODEL")
-
-
+ 
+ 
 def _next_available_key():
     """Cycle through the pool once looking for a key off cooldown.
     If every key is on cooldown, returns the next one anyway - a
@@ -86,18 +82,25 @@ def _next_available_key():
         if time.time() >= _cooldowns[candidate]:
             return candidate
     return candidate
-
-
+ 
+ 
 def _rotate_key(cooldown_seconds=None):
     """Switch _client to the next available key. Called whenever the
     current key errors with a rate-limit, auth, or connection failure."""
     global _current_key, _client
+    previous_key = _current_key
     if cooldown_seconds is not None:
         _cooldowns[_current_key] = time.time() + cooldown_seconds
     _current_key = _next_available_key()
     _client = Groq(api_key=_current_key)
-
-
+    logger.info(
+        "groq_service: rotated key %s -> %s%s",
+        _mask(previous_key), _mask(_current_key),
+        f" (cooldown {cooldown_seconds}s on {_mask(previous_key)})"
+        if cooldown_seconds else "",
+    )
+ 
+ 
 # ============================================================
 # Internal helper - NOT one of the 8 public functions.
 # Every public function below funnels through this, so retry /
@@ -107,7 +110,7 @@ def _rotate_key(cooldown_seconds=None):
 def _call_groq(system_prompt, user_prompt, expect_json=True, temperature=0.4):
     """
     Send one system+user prompt pair to Groq and return the response.
-
+ 
     Args:
         system_prompt: instructions that set the AI's role/behaviour.
         user_prompt:   the actual task + data for this call.
@@ -118,10 +121,10 @@ def _call_groq(system_prompt, user_prompt, expect_json=True, temperature=0.4):
                         before failing gracefully" rule in the design doc.
         temperature:   lower = more consistent/deterministic, which is
                         what we want for grading and structured data.
-
+ 
     Returns:
         A dict/list (if expect_json=True) or a plain string otherwise.
-
+ 
     Raises:
         ValueError if expect_json=True and both attempts fail to
         produce valid JSON. Callers (routes) should catch this and
@@ -134,16 +137,16 @@ def _call_groq(system_prompt, user_prompt, expect_json=True, temperature=0.4):
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
-
+ 
     raw_text = _create_with_rotation(messages, temperature)
-
+ 
     if not expect_json:
         return raw_text
-
+ 
     parsed = _try_parse_json(raw_text)
     if parsed is not None:
         return parsed
-
+ 
     # --- Retry once with a stricter instruction ---
     messages.append({"role": "assistant", "content": raw_text})
     messages.append({
@@ -155,17 +158,17 @@ def _call_groq(system_prompt, user_prompt, expect_json=True, temperature=0.4):
         ),
     })
     retry_text = _create_with_rotation(messages, temperature)
-
+ 
     parsed = _try_parse_json(retry_text)
     if parsed is not None:
         return parsed
-
+ 
     raise ValueError(
         "Groq did not return valid JSON after one retry. "
         f"Last raw response: {retry_text[:500]}"
     )
-
-
+ 
+ 
 def _create_with_rotation(messages, temperature):
     """
     Call chat.completions.create(), rotating through GROQ_KEYS on
@@ -178,7 +181,7 @@ def _create_with_rotation(messages, temperature):
     attempts = 0
     max_attempts = len(GROQ_KEYS)
     last_error = None
-
+ 
     while attempts < max_attempts:
         try:
             response = _client.chat.completions.create(
@@ -187,10 +190,14 @@ def _create_with_rotation(messages, temperature):
                 temperature=temperature,
             )
             return response.choices[0].message.content.strip()
-
+ 
         except RateLimitError as e:
             last_error = e
             attempts += 1
+            logger.warning(
+                "groq_service: rate limited on key %s (attempt %d/%d): %s",
+                _mask(_current_key), attempts, max_attempts, e,
+            )
             # Groq's 429 usually carries a Retry-After header; fall
             # back to a sane default if it's not present.
             wait = 60
@@ -202,26 +209,39 @@ def _create_with_rotation(messages, temperature):
                     except ValueError:
                         pass
             _rotate_key(cooldown_seconds=wait)
-
+ 
         except AuthenticationError as e:
             last_error = e
             attempts += 1
+            logger.error(
+                "groq_service: auth failed on key %s - retiring it "
+                "(attempt %d/%d): %s",
+                _mask(_current_key), attempts, max_attempts, e,
+            )
             # Dead/invalid key - retire it for the life of this process.
             _cooldowns[_current_key] = float("inf")
             _rotate_key()
-
+ 
         except APIConnectionError as e:
             last_error = e
             attempts += 1
+            logger.warning(
+                "groq_service: connection error on key %s (attempt %d/%d): %s",
+                _mask(_current_key), attempts, max_attempts, e,
+            )
             # Not necessarily this key's fault (network blip), but a
             # fresh attempt - possibly via a different network path -
             # costs little. Short cooldown only.
             _rotate_key(cooldown_seconds=5)
-
+ 
+    logger.critical(
+        "groq_service: all %d keys exhausted, invalid, or unreachable.",
+        max_attempts,
+    )
     raise RuntimeError(
         f"All {max_attempts} Groq keys exhausted, invalid, or unreachable."
     ) from last_error
-
+ 
 
 def _try_parse_json(text):
     """
@@ -368,9 +388,12 @@ Respond with ONLY a JSON object shaped like:
 # ============================================================
 # 3. generate_skill_tree
 #    Input:  profile + starting level
-#    Output: full 5-level categorized skill tree (JSON), with
-#            skill_type classification and dependencies
+#    Output: full 5-level categorized skill tree (JSON)
 # ============================================================
+"""
+REPLACE these two functions in backend/services/groq_service.py
+"""
+
 def generate_skill_tree(dream, academics, placement_level):
     """
     Generate the full 5-level skill tree WITH:
@@ -433,7 +456,7 @@ Rules:
    - "mathematical" : calculations, formulas, statistics, quantitative analysis
    - "practical"    : hands-on tasks, procedures, real-world application, tools
    - "mixed"        : requires both theory AND practical/mathematical elements
-
+   
    Base classification on the career context — not just the skill name.
    A "Patient Assessment" skill for a Nurse is "practical".
    A "Financial Ratios" skill for an Accountant is "mathematical".
@@ -468,14 +491,11 @@ Respond with ONLY a JSON object shaped like:
     return _call_groq(system_prompt, user_prompt, expect_json=True)
 
 
-# ============================================================
-# 4. generate_test_questions
-#    Input:  profile + level + test type (+ skill for skill_test)
-#    Output: questions with per-question "concept" tags
-# ============================================================
 def generate_test_questions(dream, academics, level, test_type, skill_name=None, skill_type=None):
     """
     Generate questions for a LEVEL-UP or SKILL test.
+    NOW INCLUDES: concept field on each question for gap analysis.
+
     Each question has a "concept" field identifying which specific
     sub-topic within the skill it is testing. This is what enables
     gap analysis — instead of just "72% overall", we get:
@@ -664,11 +684,11 @@ def generate_roadmap(dream, current_skill, learner_model):
     """
     Generate a personalized roadmap focused on the student's current
     unlocked skill, using their full learner model as evidence.
-
+ 
     IMPORTANT: ASPAR is a Roadmap System, not a Recommendation System.
     Say WHAT to learn and WHAT TYPE of resource to seek — never give
     specific links, course names, or step-by-step tutorials.
-
+ 
     Args:
         dream:          dream career string
         current_skill:  dict — the skill the student should focus on now
@@ -679,7 +699,7 @@ def generate_roadmap(dream, current_skill, learner_model):
                          Contains: skill_mastery, strong_skills,
                          weak_skills, persistent_gaps, academic_trend,
                          overall_trend, passion_statement, pass_rate
-
+ 
     Returns:
         {
           "overview": "1-2 sentence orientation for current level",
@@ -690,7 +710,7 @@ def generate_roadmap(dream, current_skill, learner_model):
             "resource_types": ["...", "..."]
           }
         }
-
+ 
     Equity in action: if learner_model shows weak_skills=["Statistics"]
     and current_skill is "Supervised Learning" (which depends on
     Statistics), the roadmap explicitly connects the two and tells
@@ -710,7 +730,7 @@ def generate_roadmap(dream, current_skill, learner_model):
         "tutorials - only general resource TYPES. "
         "You ALWAYS respond with strict JSON only."
     )
-
+ 
     if not current_skill:
         current_skill_line = "No skill is currently unlocked (student has completed all skills at this level)."
     else:
@@ -719,38 +739,38 @@ def generate_roadmap(dream, current_skill, learner_model):
             f"(type: {current_skill.get('skill_type', 'mixed')}, "
             f"category: {current_skill.get('category', 'General')})"
         )
-
+ 
     skill_mastery_lines = "\n".join(
         f"  - {s['skill_name']} ({s['skill_type']}): {s['score']}% "
         f"[{s['trend']}, attempt #{s['attempts']}]"
         for s in learner_model.get("skill_mastery", [])
     ) or "  No skill tests taken yet."
-
+ 
     user_prompt = f"""
 Dream career: "{dream}"
 Student's passion statement: "{learner_model.get('passion_statement', '')}"
 {current_skill_line}
-
+ 
 STUDENT'S FULL EVIDENCE (this is what makes the roadmap equitable):
-
+ 
 Per-skill test scores:
 {skill_mastery_lines}
-
+ 
 Strong skills (>=80%): {', '.join(learner_model.get('strong_skills', [])) or 'None yet'}
 Weak skills (<60%): {', '.join(learner_model.get('weak_skills', [])) or 'None yet'}
 Persistent gaps (struggled across multiple attempts): {', '.join(learner_model.get('persistent_gaps', [])) or 'None'}
-
+ 
 Academic trend: {learner_model.get('academic_trend', 'insufficient_data')}
 Overall learning trend: {learner_model.get('overall_trend', 'stable')}
 Test pass rate: {learner_model.get('pass_rate', 0)}%
-
+ 
 INSTRUCTIONS:
-
+ 
 1. Write "overview" (1-2 sentences) orienting the student at their
    current level in general terms.
-
+ 
 2. Write "current_skill" object about ONLY the current unlocked skill:
-
+ 
    - "skill_name": exact name from current_skill above
    - "why_now": 1-2 sentences. CRITICALLY: if any of the student's
      weak_skills or persistent_gaps are prerequisites or related to
@@ -760,7 +780,7 @@ INSTRUCTIONS:
      that foundation first will make this skill much easier to grasp."
      If no weak skills are relevant, explain why this skill fits the
      natural progression instead.
-
+ 
    - "what_to_learn": 2-3 sentences. Adjust content based on
      skill_type: for "mathematical" skills emphasize formulas and
      calculation practice; for "practical" skills emphasize hands-on
@@ -768,22 +788,22 @@ INSTRUCTIONS:
      reading and understanding principles; for "mixed" balance both.
      If the student has a relevant persistent_gap, explicitly say to
      address that specific sub-topic first.
-
+ 
    - "resource_types": 2-4 general resource types matched to skill_type.
      Mathematical -> "practice problem sets", "formula reference sheets"
      Practical -> "hands-on exercises", "case studies", "simulations"
      Conceptual -> "official documentation", "explanatory articles"
-
+ 
 3. If the student's overall_trend is "declining", acknowledge it
    gently and suggest revisiting fundamentals before pushing forward.
    If "improving", acknowledge their progress genuinely.
-
+ 
 4. If passion_statement is provided, connect the current skill to
    their stated motivation in one natural sentence.
-
+ 
 Keep it concise - readable in under 20 seconds. Never use bullet
 points inside the text fields - flowing sentences only.
-
+ 
 Respond with ONLY a JSON object:
 {{
   "overview": "...",
@@ -794,12 +814,13 @@ Respond with ONLY a JSON object:
     "resource_types": ["...", "..."]
   }}
 }}
-
+ 
 If current_skill_line says no skill is unlocked, omit "current_skill"
 entirely and just return {{"overview": "..."}}.
 """
-
+ 
     return _call_groq(system_prompt, user_prompt, expect_json=True)
+ 
 
 
 # ============================================================
