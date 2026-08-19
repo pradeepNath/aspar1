@@ -48,7 +48,8 @@ def get_or_create_core_tree(conn, dream):
                 return tree_id
 
             # Standardized tree: career only, no learner academics/scores.
-            skills = generate_skill_tree(dream)
+            result = generate_skill_tree(dream, academics=[], placement_level=1)
+            skills = result.get("skills", [])
 
             for skill in skills:
                 cursor.execute(
