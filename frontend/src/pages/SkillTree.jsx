@@ -8,6 +8,7 @@ export default function SkillTree() {
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState("");
   const [skillData, setSkillData] = useState(null);
+  const [expandedSkills, setExpandedSkills] = useState({});
 
   useEffect(() => { fetchTree(); }, []);
 
@@ -78,41 +79,55 @@ export default function SkillTree() {
               {isDone && <em>✓ Completed</em>}
             </div>
 
-            <div className="tree-branches">
+            <div className="tree-categories">
             {Object.entries(byLevel[lv]).map(([category, catSkills]) => (
-              <div key={category} className="tree-branch">
-                <div className="tree-branch-label">{category}</div>
-                <div className="tree-leaves">
+              <div key={category} className="tree-category">
+                <div className="tree-category-label">{category}</div>
+                <div className="tree-core-skills">
                   {[...catSkills].sort((a,b) => a.sequence_order - b.sequence_order).map(s => {
                     const cfg = statusCfg[s.status] || statusCfg.locked;
+                    const childSubskills = personalizedSubskills.filter(sub => sub.parent_skill_id === s.id);
+                    const isExpanded = expandedSkills[s.id];
                     return (
-                      <div key={s.id} className={`tree-skill-node ${s.status}`}>
-                        <div className="tree-skill-title">
-                          <span>{s.skill_name}</span>
-                          <span>{cfg.icon}</span>
+                      <div key={s.id} className={`tree-core ${s.status} ${isExpanded ? "is-expanded" : ""}`}>
+                        <div className="tree-core-node">
+                          <div className="tree-skill-title">
+                            <span>{s.skill_name}</span>
+                            <span>{cfg.icon}</span>
+                          </div>
+                          <span className="tree-status" style={{ color:cfg.color }}>
+                            {cfg.label}
+                          </span>
+                          <div className="tree-core-actions">
+                            {s.status === "unlocked" && (
+                              <button
+                                className="btn btn-grad btn-sm"
+                                onClick={() => navigate("/quiz", { state:{ test_type:"skill_test", skill_id:s.id } })}
+                              >
+                                Take test →
+                              </button>
+                            )}
+                            {childSubskills.length > 0 && (
+                              <button
+                                className="tree-expand-btn"
+                                type="button"
+                                aria-expanded={Boolean(isExpanded)}
+                                onClick={() => setExpandedSkills(current => ({ ...current, [s.id]: !current[s.id] }))}
+                              >
+                                <span>{isExpanded ? "−" : "+"}</span>
+                                {isExpanded ? "Hide practice branches" : `Show ${childSubskills.length} practice branch${childSubskills.length === 1 ? "" : "es"}`}
+                              </button>
+                            )}
+                          </div>
                         </div>
-                        <span className="tree-status" style={{ color:cfg.color }}>
-                          {cfg.label}
-                        </span>
-                        {s.status === "unlocked" && (
-                          <button
-                            className="btn btn-grad btn-sm"
-                            onClick={() => navigate("/quiz", { state:{ test_type:"skill_test", skill_id:s.id } })}
-                          >
-                            Take test →
-                          </button>
-                        )}
 
                         {/* Learner-specific remediation subskills. These are
                             returned separately by /skills/tree and must not
                             be mixed into the shared core skill list. */}
-                        {personalizedSubskills
-                          .filter(sub => sub.parent_skill_id === s.id)
-                          .map(sub => (
-                            <div
-                              key={`subskill-${sub.id}`}
-                              className="tree-subskill"
-                            >
+                        {isExpanded && childSubskills.length > 0 && (
+                          <div className="tree-subskill-branches">
+                          {childSubskills.map(sub => (
+                            <div key={`subskill-${sub.id}`} className="tree-subskill">
                               <div className="tree-subskill-top">
                                 <div>
                                   <div className="tree-subskill-label">
@@ -155,6 +170,8 @@ export default function SkillTree() {
                               )}
                             </div>
                           ))}
+                          </div>
+                        )}
                       </div>
                     );
                   })}

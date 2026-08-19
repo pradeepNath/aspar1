@@ -241,26 +241,33 @@ textarea { resize: vertical; min-height: 120px; }
 .tree-level.is-current .tree-level-marker em { color:#a5b4fc; }
 .tree-level.is-complete .tree-level-marker { color:#6ee7b7; border-color:rgba(16,185,129,.45); background:rgba(6,78,59,.25); }
 .tree-level.is-complete .tree-level-marker em { color:#6ee7b7; }
-.tree-branches { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:28px 20px; position:relative; }
-.tree-branches::before { content:""; position:absolute; height:1px; top:-17px; left:10%; right:10%; background:linear-gradient(90deg, transparent, rgba(129,140,248,.6) 12%, rgba(129,140,248,.6) 88%, transparent); }
-.tree-branch { position:relative; padding-top:20px; }
-.tree-branch::before { content:""; position:absolute; top:-17px; left:50%; height:37px; border-left:1px solid rgba(129,140,248,.6); }
-.tree-branch-label { text-align:center; color:#93c5fd; text-transform:uppercase; letter-spacing:.1em; font-size:.68rem; font-weight:800; margin-bottom:10px; }
-.tree-leaves { display:grid; gap:11px; }
-.tree-skill-node {
-  position:relative; background:rgba(19,19,31,.94); border:1px solid var(--border); border-radius:13px;
-  padding:14px 15px; display:flex; flex-direction:column; gap:9px; min-height:110px;
-  box-shadow:0 8px 22px rgba(0,0,0,.2); transition:transform .2s, border-color .2s, box-shadow .2s;
+.tree-categories { display:grid; grid-template-columns:repeat(auto-fit, minmax(270px, 1fr)); gap:42px 30px; position:relative; }
+.tree-categories::before { content:""; position:absolute; height:1px; top:-17px; left:12%; right:12%; background:linear-gradient(90deg, transparent, rgba(129,140,248,.6) 12%, rgba(129,140,248,.6) 88%, transparent); }
+.tree-category { position:relative; padding-top:20px; }
+.tree-category::before { content:""; position:absolute; top:-17px; left:50%; height:37px; border-left:1px solid rgba(129,140,248,.6); }
+.tree-category-label { text-align:center; color:#93c5fd; text-transform:uppercase; letter-spacing:.1em; font-size:.68rem; font-weight:800; margin-bottom:13px; }
+.tree-core-skills { display:grid; gap:18px; }
+.tree-core { position:relative; }
+.tree-core-node {
+  position:relative; z-index:2; background:rgba(19,19,31,.96); border:1px solid var(--border); border-radius:14px;
+  padding:15px; display:flex; flex-direction:column; gap:9px; box-shadow:0 10px 26px rgba(0,0,0,.24);
+  transition:transform .2s, border-color .2s, box-shadow .2s;
 }
-.tree-skill-node::before { content:""; position:absolute; left:-13px; top:50%; width:12px; border-top:1px solid rgba(129,140,248,.42); }
-.tree-skill-node:hover:not(.locked) { transform:translateY(-3px); border-color:rgba(103,232,249,.5); box-shadow:0 12px 30px rgba(6,182,212,.12); }
-.tree-skill-node.learned { border-color:rgba(16,185,129,.37); background:linear-gradient(135deg, rgba(16,185,129,.11), rgba(19,19,31,.94) 55%); }
-.tree-skill-node.unlocked { border-color:rgba(6,182,212,.52); background:linear-gradient(135deg, rgba(6,182,212,.12), rgba(19,19,31,.96) 58%); box-shadow:0 0 24px rgba(6,182,212,.08); }
-.tree-skill-node.locked { opacity:.5; }
+.tree-core-node:hover { transform:translateY(-2px); border-color:rgba(103,232,249,.5); box-shadow:0 14px 32px rgba(6,182,212,.12); }
+.tree-core.learned .tree-core-node { border-color:rgba(16,185,129,.37); background:linear-gradient(135deg, rgba(16,185,129,.11), rgba(19,19,31,.96) 60%); }
+.tree-core.unlocked .tree-core-node { border-color:rgba(6,182,212,.52); background:linear-gradient(135deg, rgba(6,182,212,.12), rgba(19,19,31,.96) 60%); }
+.tree-core.locked .tree-core-node { opacity:.52; }
 .tree-skill-title { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; color:#fff; font-size:.88rem; font-weight:750; line-height:1.35; }
 .tree-status { align-self:flex-start; padding:2px 8px; border-radius:20px; font-size:.69rem; font-weight:800; background:rgba(255,255,255,.035); border:1px solid currentColor; opacity:.9; }
-.tree-skill-node .btn { margin-top:auto; padding:7px 12px; font-size:.76rem; }
-.tree-subskill { margin-top:2px; padding:10px 11px; border-radius:8px; background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.25); }
+.tree-core-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:2px; }
+.tree-core-actions .btn { padding:7px 12px; font-size:.76rem; }
+.tree-expand-btn { display:inline-flex; align-items:center; gap:6px; padding:6px 0; color:#fbbf24; background:none; border:0; cursor:pointer; font:700 .72rem var(--font); }
+.tree-expand-btn span { display:grid; place-items:center; width:18px; height:18px; border:1px solid rgba(245,158,11,.5); border-radius:50%; font-size:1rem; line-height:1; }
+.tree-subskill-branches { position:relative; margin:0 0 0 22px; padding:19px 0 0 27px; display:grid; gap:11px; }
+.tree-subskill-branches::before { content:""; position:absolute; top:0; bottom:15px; left:0; border-left:1px solid rgba(245,158,11,.55); }
+.tree-subskill-branches::after { content:""; position:absolute; top:0; left:-22px; width:22px; border-top:1px solid rgba(245,158,11,.55); }
+.tree-subskill { position:relative; padding:11px; border-radius:10px; background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.3); animation:branch-grow .22s ease-out both; }
+.tree-subskill::before { content:""; position:absolute; top:50%; left:-28px; width:27px; border-top:1px solid rgba(245,158,11,.55); }
 .tree-subskill-top { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
 .tree-subskill-label { font-size:.62rem; font-weight:800; letter-spacing:.08em; color:#fbbf24; margin-bottom:4px; }
 .tree-subskill-name { font-weight:700; font-size:.79rem; color:#fff; line-height:1.3; }
@@ -269,6 +276,7 @@ textarea { resize: vertical; min-height: 120px; }
 .tree-subskill-reason { font-size:.7rem; line-height:1.45; color:var(--text-2); margin:7px 0 8px; }
 .tree-subskill .btn { padding:6px 10px; font-size:.71rem; }
 .tree-trunk-segment { position:relative; z-index:1; height:48px; width:2px; margin:0 auto; background:linear-gradient(var(--primary-lt), rgba(129,140,248,.35)); }
+@keyframes branch-grow { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
 
 @media (max-width: 620px) {
   .skill-tree-heading { flex-direction:column; margin-bottom:24px; }
@@ -276,12 +284,11 @@ textarea { resize: vertical; min-height: 120px; }
   .skill-tree-canvas { padding-left:28px; background:none; }
   .tree-root { align-items:flex-start; margin-left:-28px; }
   .tree-level-marker { margin-left:-28px; margin-right:0; }
-  .tree-branches { display:block; border-left:1px solid rgba(129,140,248,.55); padding-left:21px; }
-  .tree-branches::before { display:none; }
-  .tree-branch { padding-top:0; margin-bottom:25px; }
-  .tree-branch::before { top:13px; left:-22px; height:auto; width:21px; border-left:0; border-top:1px solid rgba(129,140,248,.55); }
-  .tree-branch-label { text-align:left; }
-  .tree-skill-node::before { display:none; }
+  .tree-categories { display:block; border-left:1px solid rgba(129,140,248,.55); padding-left:21px; }
+  .tree-categories::before { display:none; }
+  .tree-category { padding-top:0; margin-bottom:28px; }
+  .tree-category::before { top:13px; left:-22px; height:auto; width:21px; border-left:0; border-top:1px solid rgba(129,140,248,.55); }
+  .tree-category-label { text-align:left; }
   .tree-trunk-segment { margin-left:0; }
 }
 
