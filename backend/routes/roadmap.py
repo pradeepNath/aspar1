@@ -127,7 +127,7 @@ def _build_roadmap_context(cursor, user_id, dream, current_level):
         JOIN skill_tree st ON st.id = a.parent_skill_id
         WHERE a.user_id = %s
           AND a.status = 'unlocked'
-        ORDER BY a.created_at DESC
+        ORDER BY a.created_at ASC
         LIMIT 1
         """,
         (user_id,),
