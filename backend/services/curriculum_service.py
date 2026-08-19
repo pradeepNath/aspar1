@@ -99,6 +99,54 @@ def assign_tree_to_learner(conn, user_id, dream, starting_level):
             (user_id, dream),
         )
         if cursor.fetchone()["count"] > 0:
+            # A placement result can change the starting level. Keep an
+            # existing learner tree, but realign its progress statuses to the
+            # newly assigned level instead of leaving an old Level 1 node
+            # unlocked under a Level 2 placement.
+            cursor.execute(
+                """
+                UPDATE skill_tree AS st
+                SET status = CASE
+                    WHEN st.level < %s THEN 'learned'
+                    WHEN st.level = %s
+                         AND st.sequence_order = (
+                            SELECT MIN(candidate.sequence_order)
+                            FROM skill_tree AS candidate
+                            WHERE candidate.user_id = %s
+                              AND candidate.career = %s
+                              AND candidate.level = %s
+                         ) THEN 'unlocked'
+                    ELSE 'locked'
+                END
+                WHERE st.user_id = %s AND st.career = %s
+                """,
+                (
+                    starting_level, starting_level, user_id, dream,
+                    starting_level, user_id, dream,
+                ),
+            )
+
+            cursor.execute(
+                """
+                DELETE FROM learned_skills
+                WHERE user_id = %s
+                  AND skill_id IN (
+                    SELECT id FROM skill_tree
+                    WHERE user_id = %s AND career = %s
+                  )
+                """,
+                (user_id, user_id, dream),
+            )
+            cursor.execute(
+                """
+                INSERT INTO learned_skills (user_id, skill_id)
+                SELECT %s, id
+                FROM skill_tree
+                WHERE user_id = %s AND career = %s AND status = 'learned'
+                ON CONFLICT (user_id, skill_id) DO NOTHING
+                """,
+                (user_id, user_id, dream),
+            )
             return
 
         cursor.execute(

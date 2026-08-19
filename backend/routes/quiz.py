@@ -10,6 +10,7 @@ For a personalized subskill:
 """
 
 import json
+import re
 from datetime import datetime, timezone, timedelta
 
 from flask import Blueprint, request, jsonify, g
@@ -229,6 +230,15 @@ def start_quiz():
                     dream,
                     academics,
                 )
+                # Difficulty is used internally for placement. Never expose
+                # it to learners in the question wording.
+                for question in questions_data:
+                    question["question_text"] = re.sub(
+                        r"^\s*level\s*[1-3]\s*:\s*",
+                        "",
+                        question.get("question_text", ""),
+                        flags=re.IGNORECASE,
+                    )
             else:
                 questions_data = generate_test_questions(
                     dream,

@@ -367,6 +367,8 @@ Their academic results so far (may be empty): {json.dumps(academics)}
 Rules:
 - Questions must span difficulty Levels 1 to 3 only (no student starts
   above Level 3), with a mix spanning that range.
+- Do not reveal difficulty or include labels such as "Level 1" in the
+  question text. Difficulty is for internal placement only.
 - Use a mix of "mcq" and "theory" question types.
 - For "mcq" questions, include exactly 4 options and a correct_answer
   that exactly matches one of the options.
