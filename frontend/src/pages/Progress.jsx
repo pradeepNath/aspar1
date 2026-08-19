@@ -26,14 +26,19 @@ export default function Progress() {
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState("");
   const [data,    setData]    = useState(null);
+  const [skillData, setSkillData] = useState(null);
 
   useEffect(() => { fetchProgress(); }, []);
 
   async function fetchProgress() {
     setLoading(true); setError("");
     try {
-      const res = await api.get("/progress/log");
-      setData(res.data);
+      const [progressRes, skillsRes] = await Promise.all([
+        api.get("/progress/log"),
+        api.get("/skills/tree"),
+      ]);
+      setData(progressRes.data);
+      setSkillData(skillsRes.data);
     } catch (err) {
       setError(err.response?.data?.error || "Could not load progress.");
     } finally { setLoading(false); }
@@ -47,6 +52,12 @@ export default function Progress() {
   const currentLevel  = data?.current_level || 1;
   const log           = data?.progress_log  || [];
   const learnedSkills = data?.learned_skills || [];
+  const skills = skillData?.skills || [];
+  const currentSkills = skills.filter(skill => skill.level === currentLevel);
+  const completedAtLevel = currentSkills.filter(skill => skill.status === "learned").length;
+  const currentSkill = currentSkills.find(skill => skill.status === "unlocked");
+  const progressPercent = currentSkills.length ? Math.round(completedAtLevel / currentSkills.length * 100) : 0;
+  const levelHistory = [1, 2, 3, 4, 5];
 
   const chartData = log.map((row, i) => ({
     attempt: row.attempt_number || i + 1,
@@ -62,12 +73,12 @@ export default function Progress() {
 
   return (
     <><Navbar />
-    <div className="main-layout">
+    <div className="main-layout" style={{ maxWidth:1080 }}>
 
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:28 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:20, flexWrap:"wrap", marginBottom:24 }}>
         <div>
           <h1>Progress</h1>
-          <p style={{ margin:0 }}>Track your level-up test scores over time.</p>
+          <p style={{ margin:0 }}>See what you have mastered and what moves your journey forward.</p>
         </div>
         <div style={{ background:"rgba(99,102,241,0.15)", border:"1px solid rgba(99,102,241,0.35)", borderRadius:20, padding:"8px 20px", fontWeight:800, color:"var(--primary-lt)", fontSize:"0.95rem" }}>
           Level {currentLevel} / 5
@@ -76,9 +87,66 @@ export default function Progress() {
 
       {error && <div className="alert alert-error">{error}</div>}
 
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(210px, 1fr))", gap:12, marginBottom:20 }}>
+        {[
+          ["CURRENT LEVEL", `Level ${currentLevel}`, "Your active stage", "#a5b4fc"],
+          ["SKILLS MASTERED", `${learnedSkills.length}`, `${completedAtLevel}/${currentSkills.length || 0} at this level`, "#6ee7b7"],
+          ["LEVEL PROGRESS", `${progressPercent}%`, `${Math.max(currentSkills.length - completedAtLevel, 0)} skills left`, "#67e8f9"],
+        ].map(([label, value, detail, color]) => (
+          <div key={label} style={{ background:"var(--bg-card)", border:"1px solid var(--border)", borderRadius:12, padding:"15px 17px" }}>
+            <div style={{ color:"var(--text-3)", fontSize:"0.66rem", fontWeight:800, letterSpacing:".09em" }}>{label}</div>
+            <div style={{ color, fontSize:"1.45rem", fontWeight:850, lineHeight:1.25, marginTop:4 }}>{value}</div>
+            <div style={{ color:"var(--text-2)", fontSize:".75rem", marginTop:2 }}>{detail}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"minmax(0, 1.2fr) minmax(280px, .8fr)", gap:20, marginBottom:20 }}>
+        <section style={{ background:"linear-gradient(135deg, rgba(99,102,241,.14), rgba(19,19,31,.95) 55%)", border:"1px solid rgba(129,140,248,.3)", borderRadius:14, padding:"22px 24px" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", gap:12, alignItems:"flex-start", marginBottom:16 }}>
+            <div>
+              <div style={{ color:"#a5b4fc", fontSize:".68rem", fontWeight:800, letterSpacing:".09em", marginBottom:4 }}>YOUR CURRENT MILESTONE</div>
+              <h2 style={{ margin:0 }}>{currentSkill ? currentSkill.skill_name : `Complete Level ${currentLevel}`}</h2>
+            </div>
+            <span style={{ color:"#c4b5fd", background:"rgba(99,102,241,.18)", borderRadius:20, padding:"4px 10px", fontSize:".72rem", fontWeight:700, whiteSpace:"nowrap" }}>{completedAtLevel}/{currentSkills.length || 0} complete</span>
+          </div>
+          <p style={{ fontSize:".84rem", lineHeight:1.6, margin:"0 0 13px", color:"var(--text-2)" }}>
+            {currentSkill
+              ? `Focus on ${currentSkill.skill_name} next. Passing its skill test unlocks the next step in your Level ${currentLevel} path.`
+              : `Every available skill at this level is complete. You are ready to prove your level-up knowledge.`}
+          </p>
+          <div style={{ height:8, overflow:"hidden", borderRadius:10, background:"rgba(255,255,255,.08)", marginBottom:15 }}>
+            <div style={{ height:"100%", width:`${progressPercent}%`, minWidth:progressPercent ? 8 : 0, background:"var(--grad)", borderRadius:10, transition:"width .4s ease" }}/>
+          </div>
+          {currentSkill ? (
+            <button className="btn btn-grad btn-sm" onClick={() => navigate("/quiz", { state:{ test_type:"skill_test", skill_id:currentSkill.id } })}>Continue skill →</button>
+          ) : (
+            <button className="btn btn-success-soft btn-sm" onClick={() => navigate("/quiz", { state:{ test_type:"level_up" } })}>Take Level-Up Test →</button>
+          )}
+        </section>
+
+        <section style={{ background:"var(--bg-card)", border:"1px solid var(--border)", borderRadius:14, padding:"22px 20px" }}>
+          <div style={{ color:"var(--text-3)", fontSize:".68rem", fontWeight:800, letterSpacing:".09em", marginBottom:15 }}>YOUR JOURNEY</div>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:4 }}>
+            {levelHistory.map(level => {
+              const state = level < currentLevel ? "done" : level === currentLevel ? "active" : "locked";
+              const colors = { done:"#10b981", active:"#818cf8", locked:"#334155" };
+              return <div key={level} style={{ display:"flex", flexDirection:"column", alignItems:"center", flex:1, position:"relative" }}>
+                {level < 5 && <div style={{ position:"absolute", top:14, left:"60%", width:"80%", height:2, background:level < currentLevel ? "rgba(16,185,129,.5)" : "rgba(255,255,255,.08)" }}/>} 
+                <div style={{ position:"relative", zIndex:1, display:"grid", placeItems:"center", width:30, height:30, borderRadius:"50%", background:`${colors[state]}22`, border:`1px solid ${colors[state]}`, color:colors[state], fontSize:".72rem", fontWeight:800 }}>{state === "done" ? "✓" : level}</div>
+                <span style={{ color:state === "active" ? "#c4b5fd" : "var(--text-3)", fontSize:".62rem", marginTop:5, fontWeight:700 }}>L{level}</span>
+              </div>;
+            })}
+          </div>
+          <p style={{ margin:"16px 0 0", color:"var(--text-2)", fontSize:".77rem", lineHeight:1.5 }}>Complete all skills in a level, then pass its Level-Up Test to advance.</p>
+        </section>
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"minmax(0, 1.2fr) minmax(280px, .8fr)", gap:20 }}>
       {/* Score chart */}
-      <div style={{ background:"var(--bg-card)", border:"1px solid var(--border)", borderRadius:14, padding:"24px 28px", marginBottom:20 }}>
-        <h2 style={{ marginBottom:4 }}>Level-Up Test Scores</h2>
+      <div style={{ background:"var(--bg-card)", border:"1px solid var(--border)", borderRadius:14, padding:"22px 24px" }}>
+        <h2 style={{ marginBottom:4 }}>Level-Up History</h2>
+        <p style={{ fontSize:".8rem", margin:"0 0 14px" }}>Your scores after completing a full level.</p>
 
         {chartData.length === 0 ? (
           <div style={{ textAlign:"center", padding:"40px 0", color:"var(--text-3)" }}>
@@ -111,8 +179,9 @@ export default function Progress() {
       </div>
 
       {/* Learned skills */}
-      <div style={{ background:"var(--bg-card)", border:"1px solid var(--border)", borderRadius:14, padding:"24px 28px" }}>
-        <h2 style={{ marginBottom:16 }}>Learned Skills ({learnedSkills.length})</h2>
+      <div style={{ background:"var(--bg-card)", border:"1px solid var(--border)", borderRadius:14, padding:"22px 20px" }}>
+        <h2 style={{ marginBottom:4 }}>Mastered Skills</h2>
+        <p style={{ fontSize:".8rem", margin:"0 0 14px" }}>{learnedSkills.length} skills completed so far.</p>
 
         {learnedSkills.length === 0 ? (
           <div style={{ textAlign:"center", padding:"32px 0", color:"var(--text-3)" }}>
@@ -143,6 +212,7 @@ export default function Progress() {
             </div>
           ))
         )}
+      </div>
       </div>
 
       <button className="btn btn-ghost btn-sm mt-16" onClick={() => navigate("/dashboard")}>← Back to Dashboard</button>
