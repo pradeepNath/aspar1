@@ -877,7 +877,16 @@ Rules:
 6. Make why_now and what_to_learn specific but scannable: each must be one
    or two short sentences, with concrete concepts or actions.
 
-7. Recommend resources appropriate to the career and skill—not just software
+7. Create a compact learning mission:
+   - estimated_effort: a realistic short estimate such as "2–3 focused sessions".
+   - mission_steps: exactly 3 or 4 short, ordered actions. Each step must be
+     practical and build on the previous one.
+   - practice_task: one small, concrete task or artefact the learner can make.
+   - success_checklist: exactly 3 observable statements that mean the learner
+     is ready to take the test. Do not use vague statements such as "understand
+     the topic".
+
+8. Recommend resources appropriate to the career and skill—not just software
    resources. For example, use professional bodies and clinical guidelines for
    healthcare, portfolios and briefs for design, case studies for business,
    labs or simulations for science, and official references for technical work.
@@ -894,6 +903,18 @@ Return ONLY this JSON object:
     "concept": null,
     "why_now": "Why this is the correct next focus for this learner.",
     "what_to_learn": "What the learner should focus on.",
+    "estimated_effort": "2–3 focused sessions",
+    "mission_steps": [
+      "First practical action",
+      "Second practical action",
+      "Third practical action"
+    ],
+    "practice_task": "One small real-world task to complete before the test.",
+    "success_checklist": [
+      "I can demonstrate a specific outcome.",
+      "I can demonstrate another specific outcome.",
+      "I can explain or apply a specific outcome."
+    ],
     "resource_types": [
       "Professional resource: specific search terms for this skill and career",
       "Practice resource: specific search terms for hands-on practice",
@@ -934,6 +955,23 @@ Return ONLY this JSON object:
     current_focus["learning_resources"] = [
         _resource_item(item)
         for item in resource_types[:3]
+        if isinstance(item, str) and item.strip()
+    ]
+    # Bound AI output so the mission stays useful and compact in the card.
+    current_focus["estimated_effort"] = str(
+        current_focus.get("estimated_effort") or "2–3 focused sessions"
+    )[:80]
+    current_focus["mission_steps"] = [
+        str(step)[:180]
+        for step in (current_focus.get("mission_steps") or [])[:4]
+        if isinstance(step, str) and step.strip()
+    ]
+    current_focus["practice_task"] = str(
+        current_focus.get("practice_task") or ""
+    )[:240]
+    current_focus["success_checklist"] = [
+        str(item)[:160]
+        for item in (current_focus.get("success_checklist") or [])[:3]
         if isinstance(item, str) and item.strip()
     ]
     roadmap["current_focus"] = current_focus

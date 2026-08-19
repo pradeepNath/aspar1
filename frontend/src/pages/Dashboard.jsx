@@ -186,6 +186,42 @@ export default function Dashboard() {
                           {roadmap.current_skill.what_to_learn}
                         </p>
 
+                        {(roadmap.current_skill.mission_steps?.length > 0 || roadmap.current_skill.practice_task || roadmap.current_skill.success_checklist?.length > 0) && (
+                          <div style={{ borderTop:"1px solid rgba(255,255,255,0.08)", paddingTop:14, margin:"2px 0 14px" }}>
+                            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, marginBottom:9 }}>
+                              <p style={{ fontSize:"0.68rem", fontWeight:800, letterSpacing:"0.08em", color:"var(--primary-lt)", margin:0 }}>YOUR LEARNING MISSION</p>
+                              {roadmap.current_skill.estimated_effort && <span style={{ color:"#c4b5fd", background:"rgba(99,102,241,0.12)", borderRadius:12, padding:"2px 8px", fontSize:"0.68rem", fontWeight:700 }}>{roadmap.current_skill.estimated_effort}</span>}
+                            </div>
+
+                            {roadmap.current_skill.mission_steps?.length > 0 && (
+                              <ol style={{ listStyle:"none", display:"grid", gap:7, margin:"0 0 13px", padding:0 }}>
+                                {roadmap.current_skill.mission_steps.map((step, index) => (
+                                  <li key={index} style={{ display:"flex", gap:9, color:"var(--text-2)", fontSize:"0.78rem", lineHeight:1.45 }}>
+                                    <span style={{ flexShrink:0, display:"grid", placeItems:"center", width:19, height:19, borderRadius:"50%", background:"rgba(99,102,241,0.2)", color:"#c4b5fd", fontSize:"0.66rem", fontWeight:800 }}>{index + 1}</span>
+                                    <span>{step}</span>
+                                  </li>
+                                ))}
+                              </ol>
+                            )}
+
+                            {roadmap.current_skill.practice_task && (
+                              <div style={{ background:"rgba(16,185,129,0.07)", border:"1px solid rgba(16,185,129,0.2)", borderRadius:8, padding:"9px 10px", marginBottom:11 }}>
+                                <div style={{ fontSize:"0.65rem", fontWeight:800, letterSpacing:"0.08em", color:"#6ee7b7", marginBottom:3 }}>PRACTICE TASK</div>
+                                <div style={{ color:"var(--text-2)", fontSize:"0.77rem", lineHeight:1.45 }}>{roadmap.current_skill.practice_task}</div>
+                              </div>
+                            )}
+
+                            {roadmap.current_skill.success_checklist?.length > 0 && (
+                              <div>
+                                <div style={{ fontSize:"0.65rem", fontWeight:800, letterSpacing:"0.08em", color:"var(--text-3)", marginBottom:5 }}>READY FOR THE TEST WHEN YOU CAN:</div>
+                                <div style={{ display:"grid", gap:4 }}>
+                                  {roadmap.current_skill.success_checklist.map((item, index) => <div key={index} style={{ color:"var(--text-2)", fontSize:"0.75rem", lineHeight:1.4 }}>○ {item}</div>)}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         {roadmap.current_skill.completed_subskill && (
                           <p style={{ fontSize:"0.8rem", lineHeight:1.55, margin:"0 0 12px", color:"#6ee7b7" }}>
                             ✓ Completed practice branch: {roadmap.current_skill.completed_subskill}. You’re now returning to the core skill.
