@@ -27,353 +27,143 @@ WEAK_THRESHOLD   = 50    # <  50% on a question = weak concept
 BLOCK_THRESHOLD  = 60    # overall < 60% = blocks next skill
 
 
-def analyze_skill_gaps(
-    conn,
-    user_id,
-    skill_id,
-    session_id,
-    questions_rows,
-    ai_results_map,
-    overall_score,
-):
+def analyze_skill_gaps(conn, user_id, skill_id, session_id, questions_rows,
+                        ai_results_map, overall_score):
     """
-    Analyze skill test results.
+    Analyze skill test results to extract structured gap data.
+    Save the result to skill_gap_analysis.
 
-    Important distinction:
-      - weak_concepts = concepts weak in THIS attempt
-      - persistent_weak_concepts = concepts weak in THIS attempt
-        AND weak in at least one PREVIOUS attempt
+    Args:
+        conn:            active DB connection
+        user_id:         int
+        skill_id:        int — the skill_tree.id being tested
+        session_id:      int — quiz_sessions.id
+        questions_rows:  list of question dicts from quiz_questions
+                         (must include 'concept' field)
+        ai_results_map:  dict of question_number -> grading result
+                         (score_out_of_10, feedback)
+        overall_score:   float — total_score_percent for this session
 
-    Personalized subskills should only be generated from
-    persistent_weak_concepts.
+    Returns:
+        dict — the gap analysis record that was saved
     """
-
     with conn.cursor() as cursor:
 
-        # ---------------------------------------------------------
-        # 1. Fetch skill information
-        # ---------------------------------------------------------
+        # --- Fetch skill info ---
         cursor.execute(
             """
-            SELECT
-                skill_name,
-                skill_type,
-                sequence_order,
-                level,
-                career
-            FROM skill_tree
-            WHERE id = %s
-              AND user_id = %s
+            SELECT skill_name, skill_type, sequence_order, level, career
+            FROM skill_tree WHERE id = %s AND user_id = %s
             """,
-            (skill_id, user_id),
+            (skill_id, user_id)
         )
-
         skill = cursor.fetchone()
-
         if not skill:
             return None
 
-        skill_type = skill["skill_type"] or "mixed"
+        skill_type     = skill["skill_type"] or "mixed"
         sequence_order = skill["sequence_order"]
-        level = skill["level"]
-        career = skill["career"]
+        level          = skill["level"]
+        career         = skill["career"]
 
-        # ---------------------------------------------------------
-        # 2. Aggregate current test scores by concept
-        # ---------------------------------------------------------
-        concept_scores = {}
-
-        for question in questions_rows:
-            concept = (question.get("concept") or "General").strip()
-
-            ai_result = ai_results_map.get(
-                question["question_number"],
-                {},
-            )
-
-            score = float(
-                ai_result.get("score_out_of_10", 0)
-            ) * 10
+        # --- Aggregate scores by concept ---
+        concept_scores = {}   # concept -> [scores]
+        for q in questions_rows:
+            concept = q.get("concept") or "General"
+            ai_r    = ai_results_map.get(q["question_number"], {})
+            score   = float(ai_r.get("score_out_of_10", 0)) * 10  # convert to %
 
             if concept not in concept_scores:
                 concept_scores[concept] = []
-
             concept_scores[concept].append(score)
 
+        # Average score per concept
         concept_averages = {
-            concept: round(
-                sum(scores) / len(scores),
-                1,
-            )
+            concept: round(sum(scores) / len(scores), 1)
             for concept, scores in concept_scores.items()
         }
 
-        # ---------------------------------------------------------
-        # 3. Current-test weak/strong concepts
-        # ---------------------------------------------------------
+        # Classify concepts as strong or weak
         strong_concepts = [
-            {
-                "concept": concept,
-                "score": score,
-            }
-            for concept, score in concept_averages.items()
-            if score >= STRONG_THRESHOLD
+            {"concept": c, "score": s}
+            for c, s in concept_averages.items()
+            if s >= STRONG_THRESHOLD
         ]
-
         weak_concepts = [
-            {
-                "concept": concept,
-                "score": score,
-            }
-            for concept, score in concept_averages.items()
-            if score < WEAK_THRESHOLD
+            {"concept": c, "score": s}
+            for c, s in concept_averages.items()
+            if s < WEAK_THRESHOLD
         ]
 
-        weak_concepts.sort(
-            key=lambda item: item["score"]
-        )
+        # Sort weak concepts by score (worst first)
+        weak_concepts.sort(key=lambda x: x["score"])
+        strong_concepts.sort(key=lambda x: x["score"], reverse=True)
 
-        strong_concepts.sort(
-            key=lambda item: item["score"],
-            reverse=True,
-        )
-
-        # ---------------------------------------------------------
-        # 4. Find previous weak concepts for this SAME skill
-        # ---------------------------------------------------------
-        #
-        # We deliberately exclude the current session.
-        #
-        # Example:
-        #
-        # Attempt 1:
-        #   Repository Initialization = 0%
-        #
-        # Attempt 2:
-        #   Repository Initialization = 20%
-        #
-        # Only on Attempt 2 will it become a persistent gap.
-        #
+        # --- Score trend vs previous attempt on this same skill ---
         cursor.execute(
             """
-            SELECT weak_concepts
-            FROM skill_gap_analysis
-            WHERE user_id = %s
-              AND skill_id = %s
-              AND session_id <> %s
-            ORDER BY analyzed_at DESC
-            LIMIT 10
-            """,
-            (
-                user_id,
-                skill_id,
-                session_id,
-            ),
-        )
-
-        previous_rows = cursor.fetchall()
-
-        previous_weak_concepts = set()
-
-        def normalize_concept(value):
-            """
-            Normalize concept names so small formatting differences
-            don't prevent matching.
-
-            Example:
-                "Repository Initialization"
-                " repository initialization "
-                "REPOSITORY INITIALIZATION"
-
-            all become:
-
-                "repository initialization"
-            """
-            if not value:
-                return ""
-
-            return " ".join(
-                str(value)
-                .strip()
-                .lower()
-                .split()
-            )
-
-        for row in previous_rows:
-            try:
-                old_weak_concepts = json.loads(
-                    row["weak_concepts"] or "[]"
-                )
-
-                if not isinstance(old_weak_concepts, list):
-                    continue
-
-                for item in old_weak_concepts:
-                    if isinstance(item, dict):
-                        concept = item.get("concept")
-                    else:
-                        concept = item
-
-                    normalized = normalize_concept(concept)
-
-                    if normalized:
-                        previous_weak_concepts.add(
-                            normalized
-                        )
-
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
-
-        # ---------------------------------------------------------
-        # 5. Determine persistent gaps
-        # ---------------------------------------------------------
-        #
-        # A concept is a persistent gap only when:
-        #
-        #   current attempt < 50%
-        #
-        # AND
-        #
-        #   the same concept was weak in a previous attempt.
-        #
-        persistent_weak_concepts = []
-
-        for item in weak_concepts:
-            concept = item["concept"]
-
-            if (
-                normalize_concept(concept)
-                in previous_weak_concepts
-            ):
-                persistent_weak_concepts.append(
-                    {
-                        "concept": concept,
-                        "score": item["score"],
-                    }
-                )
-
-        # ---------------------------------------------------------
-        # 6. Score trend / attempt number
-        # ---------------------------------------------------------
-        #
-        # Exclude current session so submitting/re-running the same
-        # grading request doesn't artificially increase attempt_number.
-        #
-        cursor.execute(
-            """
-            SELECT
-                overall_score,
-                attempt_number
-            FROM skill_gap_analysis
-            WHERE user_id = %s
-              AND skill_id = %s
-              AND session_id <> %s
-            ORDER BY analyzed_at DESC
+            SELECT sga.overall_score, sga.attempt_number
+            FROM skill_gap_analysis sga
+            WHERE sga.user_id = %s AND sga.skill_id = %s
+            ORDER BY sga.analyzed_at DESC
             LIMIT 1
             """,
-            (
-                user_id,
-                skill_id,
-                session_id,
-            ),
+            (user_id, skill_id)
         )
+        prev = cursor.fetchone()
 
-        previous_attempt = cursor.fetchone()
-
-        if previous_attempt is None:
-            score_trend = "first_attempt"
-            score_delta = 0.0
+        if prev is None:
+            score_trend    = "first_attempt"
+            score_delta    = 0.0
             attempt_number = 1
-
         else:
-            previous_score = float(
-                previous_attempt["overall_score"] or 0
-            )
-
-            attempt_number = (
-                int(previous_attempt["attempt_number"] or 0)
-                + 1
-            )
-
-            score_delta = round(
-                overall_score - previous_score,
-                1,
-            )
+            prev_score     = float(prev["overall_score"])
+            attempt_number = int(prev["attempt_number"]) + 1
+            score_delta    = round(overall_score - prev_score, 1)
 
             if score_delta >= 5:
                 score_trend = "improving"
-
             elif score_delta <= -5:
                 score_trend = "declining"
-
             else:
                 score_trend = "stable"
 
-        # ---------------------------------------------------------
-        # 7. Determine whether current skill blocks next skill
-        # ---------------------------------------------------------
+        # --- Does this weakness block the next skill? ---
+        # Check if there is a next skill in sequence at the same level
         blocks_next = False
-
         if overall_score < BLOCK_THRESHOLD:
-
             cursor.execute(
                 """
-                SELECT id
-                FROM skill_tree
-                WHERE user_id = %s
-                  AND career = %s
-                  AND level = %s
+                SELECT id FROM skill_tree
+                WHERE user_id = %s AND career = %s AND level = %s
                   AND sequence_order > %s
                 ORDER BY sequence_order ASC
                 LIMIT 1
                 """,
-                (
-                    user_id,
-                    career,
-                    level,
-                    sequence_order,
-                ),
+                (user_id, career, level, sequence_order)
             )
-
             next_skill = cursor.fetchone()
-
             if next_skill:
                 blocks_next = True
 
-        # ---------------------------------------------------------
-        # 8. Save current analysis
-        # ---------------------------------------------------------
+        # --- Save to skill_gap_analysis ---
+        # Use ON CONFLICT to update if this session was already analyzed
         cursor.execute(
             """
             INSERT INTO skill_gap_analysis
-                (
-                    user_id,
-                    skill_id,
-                    session_id,
-                    skill_type,
-                    overall_score,
-                    weak_concepts,
-                    strong_concepts,
-                    score_trend,
-                    score_delta,
-                    attempt_number,
-                    blocks_next
-                )
-            VALUES
-                (
-                    %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s
-                )
-            ON CONFLICT (user_id, skill_id, session_id)
-            DO UPDATE SET
-                overall_score = EXCLUDED.overall_score,
-                weak_concepts = EXCLUDED.weak_concepts,
+                (user_id, skill_id, session_id, skill_type, overall_score,
+                 weak_concepts, strong_concepts, score_trend, score_delta,
+                 attempt_number, blocks_next)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (user_id, skill_id, session_id) DO UPDATE SET
+                overall_score   = EXCLUDED.overall_score,
+                weak_concepts   = EXCLUDED.weak_concepts,
                 strong_concepts = EXCLUDED.strong_concepts,
-                score_trend = EXCLUDED.score_trend,
-                score_delta = EXCLUDED.score_delta,
-                attempt_number = EXCLUDED.attempt_number,
-                blocks_next = EXCLUDED.blocks_next,
-                analyzed_at = NOW()
+                score_trend     = EXCLUDED.score_trend,
+                score_delta     = EXCLUDED.score_delta,
+                attempt_number  = EXCLUDED.attempt_number,
+                blocks_next     = EXCLUDED.blocks_next,
+                analyzed_at     = NOW()
             """,
             (
                 user_id,
@@ -387,32 +177,19 @@ def analyze_skill_gaps(
                 score_delta,
                 attempt_number,
                 blocks_next,
-            ),
+            )
         )
 
-        # ---------------------------------------------------------
-        # 9. Return both current weaknesses and persistent gaps
-        # ---------------------------------------------------------
         return {
-            "skill_name": skill["skill_name"],
-            "skill_type": skill_type,
-            "overall_score": overall_score,
-
-            # Weak in THIS attempt.
-            "weak_concepts": weak_concepts,
-
-            # Strong in THIS attempt.
-            "strong_concepts": strong_concepts,
-
-            # Repeated weakness across attempts.
-            "persistent_weak_concepts": (
-                persistent_weak_concepts
-            ),
-
-            "score_trend": score_trend,
-            "score_delta": score_delta,
-            "attempt_number": attempt_number,
-            "blocks_next": blocks_next,
+            "skill_name":       skill["skill_name"],
+            "skill_type":       skill_type,
+            "overall_score":    overall_score,
+            "weak_concepts":    weak_concepts,
+            "strong_concepts":  strong_concepts,
+            "score_trend":      score_trend,
+            "score_delta":      score_delta,
+            "attempt_number":   attempt_number,
+            "blocks_next":      blocks_next,
         }
 
 

@@ -47,73 +47,56 @@ export default function SkillTree() {
 
   return (
     <><Navbar />
-    <div className="main-layout">
+    <div className="main-layout skill-tree-page">
 
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:28 }}>
+      <div className="skill-tree-heading">
         <div>
           <h1>Skill Tree</h1>
-          <p style={{ margin:0 }}>Your personalised learning path — level by level.</p>
+          <p>Your personalised learning path — level by level.</p>
         </div>
-        <div style={{ background:"rgba(99,102,241,0.15)", border:"1px solid rgba(99,102,241,0.35)", borderRadius:20, padding:"8px 20px", fontWeight:800, color:"var(--primary-lt)", fontSize:"0.95rem", whiteSpace:"nowrap" }}>
+        <div className="tree-progress-badge">
           Level {currentLevel} / 5
         </div>
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}
 
-      {levels.map(lv => {
+      {skills.length > 0 && <div className="skill-tree-canvas">
+        <div className="tree-root" aria-hidden="true"><span>✦</span><small>Your path</small></div>
+
+      {levels.map((lv, levelIndex) => {
         const isCurrentLv = lv === currentLevel;
         const isDone      = lv < currentLevel;
 
         return (
-          <div key={lv} style={{ marginBottom:36 }}>
-            {/* Level header */}
-            <div style={{
-              display:"flex", alignItems:"center", gap:12, marginBottom:18,
-              padding:"12px 20px", borderRadius:10,
-              background: isCurrentLv ? "rgba(99,102,241,0.12)" : isDone ? "rgba(16,185,129,0.08)" : "rgba(255,255,255,0.03)",
-              border:"1px solid",
-              borderColor: isCurrentLv ? "rgba(99,102,241,0.35)" : isDone ? "rgba(16,185,129,0.25)" : "var(--border)",
-            }}>
-              <span style={{ fontWeight:800, fontSize:"1rem", color: isCurrentLv ? "var(--primary-lt)" : isDone ? "var(--success)" : "var(--text-3)" }}>
-                Level {lv}
-              </span>
+          <section key={lv} className={`tree-level ${isCurrentLv ? "is-current" : ""} ${isDone ? "is-complete" : ""}`}>
+            <div className="tree-level-marker">
+              <span>Level {lv}</span>
               {isCurrentLv && (
-                <span style={{ background:"rgba(99,102,241,0.25)", color:"var(--primary-lt)", borderRadius:10, padding:"2px 10px", fontSize:"0.72rem", fontWeight:700, letterSpacing:"0.06em" }}>
-                  CURRENT
-                </span>
+                <em>CURRENT</em>
               )}
-              {isDone && <span style={{ color:"var(--success)", fontSize:"0.82rem", fontWeight:600 }}>✓ Completed</span>}
+              {isDone && <em>✓ Completed</em>}
             </div>
 
+            <div className="tree-branches">
             {Object.entries(byLevel[lv]).map(([category, catSkills]) => (
-              <div key={category} style={{ marginBottom:18 }}>
-                <p style={{ fontSize:"0.72rem", fontWeight:700, letterSpacing:"0.1em", color:"var(--text-3)", marginBottom:10, paddingLeft:2 }}>
-                  {category.toUpperCase()}
-                </p>
-                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(200px, 1fr))", gap:10 }}>
-                  {catSkills.sort((a,b) => a.sequence_order - b.sequence_order).map(s => {
+              <div key={category} className="tree-branch">
+                <div className="tree-branch-label">{category}</div>
+                <div className="tree-leaves">
+                  {[...catSkills].sort((a,b) => a.sequence_order - b.sequence_order).map(s => {
                     const cfg = statusCfg[s.status] || statusCfg.locked;
                     return (
-                      <div key={s.id} style={{
-                        background: cfg.bg,
-                        border:`1.5px solid ${cfg.border}`,
-                        borderRadius:10, padding:"14px 16px",
-                        display:"flex", flexDirection:"column", gap:8,
-                        opacity: s.status === "locked" ? 0.55 : 1,
-                        transition:"all 0.2s",
-                      }}>
-                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
-                          <span style={{ fontWeight:700, fontSize:"0.88rem", color:"#fff", lineHeight:1.3 }}>{s.skill_name}</span>
-                          <span style={{ fontSize:"1rem", flexShrink:0 }}>{cfg.icon}</span>
+                      <div key={s.id} className={`tree-skill-node ${s.status}`}>
+                        <div className="tree-skill-title">
+                          <span>{s.skill_name}</span>
+                          <span>{cfg.icon}</span>
                         </div>
-                        <span style={{ display:"inline-block", alignSelf:"flex-start", background:`${cfg.bg}`, border:`1px solid ${cfg.border}`, color:cfg.color, borderRadius:12, padding:"2px 9px", fontSize:"0.72rem", fontWeight:700 }}>
+                        <span className="tree-status" style={{ color:cfg.color }}>
                           {cfg.label}
                         </span>
                         {s.status === "unlocked" && (
                           <button
                             className="btn btn-grad btn-sm"
-                            style={{ marginTop:2, fontSize:"0.78rem", padding:"7px 14px" }}
                             onClick={() => navigate("/quiz", { state:{ test_type:"skill_test", skill_id:s.id } })}
                           >
                             Take test →
@@ -128,35 +111,29 @@ export default function SkillTree() {
                           .map(sub => (
                             <div
                               key={`subskill-${sub.id}`}
-                              style={{
-                                marginTop:4,
-                                padding:"10px 11px",
-                                borderRadius:8,
-                                background:"rgba(245,158,11,0.08)",
-                                border:"1px solid rgba(245,158,11,0.25)",
-                              }}
+                              className="tree-subskill"
                             >
-                              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
+                              <div className="tree-subskill-top">
                                 <div>
-                                  <div style={{ fontSize:"0.65rem", fontWeight:800, letterSpacing:"0.08em", color:"#fbbf24", marginBottom:4 }}>
+                                  <div className="tree-subskill-label">
                                     PERSONALIZED SUBSKILL
                                   </div>
-                                  <div style={{ fontWeight:700, fontSize:"0.82rem", color:"#fff", lineHeight:1.3 }}>
+                                  <div className="tree-subskill-name">
                                     {sub.skill_name}
                                   </div>
                                   {sub.concept && (
-                                    <div style={{ fontSize:"0.72rem", color:"var(--text-3)", marginTop:4 }}>
+                                    <div className="tree-subskill-concept">
                                       Gap: {sub.concept}
                                     </div>
                                   )}
                                 </div>
-                                <span style={{ fontSize:"0.72rem", color: sub.status === "learned" ? "var(--success)" : "#fbbf24", flexShrink:0 }}>
+                                <span className="tree-subskill-icon" style={{ color: sub.status === "learned" ? "var(--success)" : "#fbbf24" }}>
                                   {sub.status === "learned" ? "✓" : "⚠"}
                                 </span>
                               </div>
 
                               {sub.reason && (
-                                <p style={{ fontSize:"0.72rem", lineHeight:1.45, color:"var(--text-2)", margin:"7px 0 8px" }}>
+                                <p className="tree-subskill-reason">
                                   {sub.reason}
                                 </p>
                               )}
@@ -164,14 +141,7 @@ export default function SkillTree() {
                               {sub.status === "unlocked" && (
                                 <button
                                   className="btn btn-sm"
-                                  style={{
-                                    marginTop:2,
-                                    fontSize:"0.74rem",
-                                    padding:"6px 11px",
-                                    background:"rgba(245,158,11,0.15)",
-                                    border:"1px solid rgba(245,158,11,0.35)",
-                                    color:"#fcd34d",
-                                  }}
+                                  style={{ background:"rgba(245,158,11,0.15)", border:"1px solid rgba(245,158,11,0.35)", color:"#fcd34d" }}
                                   onClick={() => navigate("/quiz", {
                                     state:{
                                       test_type:"skill_test",
@@ -191,9 +161,12 @@ export default function SkillTree() {
                 </div>
               </div>
             ))}
-          </div>
+            </div>
+            {levelIndex < levels.length - 1 && <div className="tree-trunk-segment" aria-hidden="true" />}
+          </section>
         );
       })}
+      </div>}
 
       {skills.length === 0 && !error && (
         <div style={{ textAlign:"center", padding:"60px 20px", color:"var(--text-3)" }}>
