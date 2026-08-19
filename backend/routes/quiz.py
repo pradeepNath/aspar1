@@ -188,7 +188,7 @@ def start_quiz():
                         )
 
                     elapsed = datetime.now(timezone.utc) - last_attempt
-                    remaining = timedelta(hours=4) - elapsed
+                    remaining = timedelta(hours=0) - elapsed
 
                     if remaining.total_seconds() > 0:
                         minutes_left = int(
