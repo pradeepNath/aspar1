@@ -714,6 +714,8 @@ Grade each question:
 - Give a score_out_of_10 and 1-2 sentences of feedback per question.
 - Then compute total_score_percent across all questions
   (sum of scores / (10 * number of questions) * 100, rounded to 1 decimal).
+- Preserve the "concept" field from each question in the corresponding
+  result. Do not invent or rename the concept.
 - Finally, list 1-5 short topic names the student appears weak on as
   "knowledge_gaps" (based on the lowest-scoring questions). If the
   student did well across the board, this list can be empty.
@@ -721,7 +723,12 @@ Grade each question:
 Respond with ONLY a JSON object shaped like:
 {{
   "results": [
-    {{"question_number": 1, "score_out_of_10": 8, "feedback": "..."}}
+    {{
+    "question_number": 1,
+    "concept": "Probability Distributions",
+    "score_out_of_10": 8,
+    "feedback": "..."
+}}
   ],
   "total_score_percent": 80.0,
   "knowledge_gaps": ["..."]
@@ -1146,23 +1153,29 @@ Demonstrated weak concepts:
 Create 1-3 temporary remediation subskills.
 
 Rules:
-- Every subskill must directly address a weak concept.
+
+- Every subskill must directly address one of the supplied weak concepts.
+- Only create subskills for concepts with score_percent below 50.
+- Do not invent unrelated weaknesses.
 - These are beneath the parent core skill only.
 - Do not create a new core skill.
-- Do not include concepts with score 50% or above.
+- Do not modify, remove, rename, or reorder any existing core skill.
+- Create at most one subskill for each weak concept.
+- The skill should be specific enough for the learner to practice.
+- Include the actual weak concept in "concept".
+- Use "conceptual", "mathematical", "practical", or "mixed" for skill_type.
 
 Return ONLY:
 
 [
   {{
-    "concept": "Hotfix Workflow",
-    "skill_name": "Practice Hotfix Branch Integration",
+    "concept": "Exact weak concept",
+    "skill_name": "Specific remediation skill",
     "skill_type": "practical",
-    "reason": "The learner scored 0% on the hotfix workflow concept."
+    "reason": "The learner scored 30% on this concept."
   }}
 ]
 """
-
     return _call_groq(
         system_prompt,
         user_prompt,
