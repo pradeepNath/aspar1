@@ -221,11 +221,17 @@ def run_grading():
                     (adaptive_skill_id, g.user_id),
                 )
 
-            # A failed core-skill test can create learner-specific subskills.
+            # Create remediation only after the learner has had a second
+            # unsuccessful attempt at the same core skill. A single low score
+            # is useful feedback, but is not enough evidence to add a new
+            # branch to the learner's tree.
             if (
                 test_type == "skill_test"
                 and skill_id
                 and not adaptive_skill_id
+                and total_score_percent < 80
+                and gap_data
+                and gap_data.get("attempt_number", 1) >= 2
             ):
                 # concept_performance is already filtered to weak (<50%)
                 # concepts via gap_data above; this re-check is a harmless
