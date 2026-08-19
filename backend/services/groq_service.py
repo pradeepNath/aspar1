@@ -28,9 +28,9 @@ import time
 import logging
 import itertools
 from groq import Groq, RateLimitError, AuthenticationError, APIConnectionError
- 
+
 logger = logging.getLogger("groq_service")
- 
+
 # ============================================================
 # Key rotation pool
 # ============================================================
@@ -38,20 +38,20 @@ GROQ_KEYS = [
     os.environ[k] for k in sorted(os.environ)
     if k.startswith("GROQ_API_KEY")
 ]
- 
+
 if not GROQ_KEYS:
     raise RuntimeError(
         "No GROQ_API_KEY_* found in environment. "
         "Set GROQ_API_KEY_1 (at minimum) in .env."
     )
- 
- 
+
+
 def _mask(key):
     """Last 6 chars only - enough to tell keys apart in logs without
     ever printing a usable key."""
     return f"...{key[-6:]}" if key else "None"
- 
- 
+
+
 # Per-key cooldown timestamps - a key that just hit a rate limit or
 # failed auth is skipped until its cooldown expires (or forever, for
 # a dead/invalid key).
@@ -59,20 +59,48 @@ _cooldowns = {key: 0 for key in GROQ_KEYS}
 _key_cycle = itertools.cycle(GROQ_KEYS)
 _current_key = next(_key_cycle)
 _client = Groq(api_key=_current_key)
- 
+
 logger.info(
     "groq_service: loaded %d key(s), starting on %s",
     len(GROQ_KEYS), _mask(_current_key),
 )
- 
+
 # Default model - can be overridden via .env (GROQ_MODEL=...) without
 # touching code, in case the supported model name changes again.
 # NOTE: llama-3.3-70b-versatile was deprecated by Groq (announced
 # June 17 2026); ASPAR now runs on openai/gpt-oss-120b, Groq's
 # recommended replacement.
 _MODEL = os.getenv("GROQ_MODEL")
- 
- 
+
+# ------------------------------------------------------------
+# Running token-usage totals (process lifetime, in-memory only -
+# resets on every Render restart/deploy, not persisted to DB).
+# Tracked per-key so you can see which key is absorbing the most
+# load, plus a grand total across all keys.
+# ------------------------------------------------------------
+_usage_totals = {
+    key: {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
+    for key in GROQ_KEYS
+}
+
+
+def get_usage_summary():
+    """
+    Return current in-memory token usage totals, per key (masked) and
+    combined. Call this from a debug/admin route if you want to check
+    usage without digging through logs, e.g.:
+
+        GET /debug/groq-usage -> jsonify(groq_service.get_usage_summary())
+    """
+    combined = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
+    per_key = {}
+    for key, stats in _usage_totals.items():
+        per_key[_mask(key)] = dict(stats)
+        for field in combined:
+            combined[field] += stats[field]
+    return {"per_key": per_key, "combined": combined}
+
+
 def _next_available_key():
     """Cycle through the pool once looking for a key off cooldown.
     If every key is on cooldown, returns the next one anyway - a
@@ -82,8 +110,8 @@ def _next_available_key():
         if time.time() >= _cooldowns[candidate]:
             return candidate
     return candidate
- 
- 
+
+
 def _rotate_key(cooldown_seconds=None):
     """Switch _client to the next available key. Called whenever the
     current key errors with a rate-limit, auth, or connection failure."""
@@ -99,18 +127,18 @@ def _rotate_key(cooldown_seconds=None):
         f" (cooldown {cooldown_seconds}s on {_mask(previous_key)})"
         if cooldown_seconds else "",
     )
- 
- 
+
+
 # ============================================================
 # Internal helper - NOT one of the 8 public functions.
 # Every public function below funnels through this, so retry /
-# JSON-parsing / error-handling / key-rotation logic all live in
-# exactly one place.
+# JSON-parsing / error-handling / key-rotation / usage-logging
+# logic all live in exactly one place.
 # ============================================================
 def _call_groq(system_prompt, user_prompt, expect_json=True, temperature=0.4):
     """
     Send one system+user prompt pair to Groq and return the response.
- 
+
     Args:
         system_prompt: instructions that set the AI's role/behaviour.
         user_prompt:   the actual task + data for this call.
@@ -121,10 +149,10 @@ def _call_groq(system_prompt, user_prompt, expect_json=True, temperature=0.4):
                         before failing gracefully" rule in the design doc.
         temperature:   lower = more consistent/deterministic, which is
                         what we want for grading and structured data.
- 
+
     Returns:
         A dict/list (if expect_json=True) or a plain string otherwise.
- 
+
     Raises:
         ValueError if expect_json=True and both attempts fail to
         produce valid JSON. Callers (routes) should catch this and
@@ -137,16 +165,16 @@ def _call_groq(system_prompt, user_prompt, expect_json=True, temperature=0.4):
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
- 
+
     raw_text = _create_with_rotation(messages, temperature)
- 
+
     if not expect_json:
         return raw_text
- 
+
     parsed = _try_parse_json(raw_text)
     if parsed is not None:
         return parsed
- 
+
     # --- Retry once with a stricter instruction ---
     messages.append({"role": "assistant", "content": raw_text})
     messages.append({
@@ -158,17 +186,17 @@ def _call_groq(system_prompt, user_prompt, expect_json=True, temperature=0.4):
         ),
     })
     retry_text = _create_with_rotation(messages, temperature)
- 
+
     parsed = _try_parse_json(retry_text)
     if parsed is not None:
         return parsed
- 
+
     raise ValueError(
         "Groq did not return valid JSON after one retry. "
         f"Last raw response: {retry_text[:500]}"
     )
- 
- 
+
+
 def _create_with_rotation(messages, temperature):
     """
     Call chat.completions.create(), rotating through GROQ_KEYS on
@@ -177,11 +205,15 @@ def _create_with_rotation(messages, temperature):
     RuntimeError. This is independent from the JSON-retry logic in
     _call_groq(): a key can succeed at the API level but still return
     bad JSON, and vice versa.
+
+    On every successful call, logs and accumulates token usage
+    (prompt/completion/total) against the key that served it, using
+    the `usage` object Groq returns alongside the response.
     """
     attempts = 0
     max_attempts = len(GROQ_KEYS)
     last_error = None
- 
+
     while attempts < max_attempts:
         try:
             response = _client.chat.completions.create(
@@ -189,8 +221,35 @@ def _create_with_rotation(messages, temperature):
                 messages=messages,
                 temperature=temperature,
             )
+
+            # --- Token usage logging ---
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                prompt_t = getattr(usage, "prompt_tokens", 0) or 0
+                completion_t = getattr(usage, "completion_tokens", 0) or 0
+                total_t = getattr(usage, "total_tokens", prompt_t + completion_t)
+
+                stats = _usage_totals[_current_key]
+                stats["prompt_tokens"] += prompt_t
+                stats["completion_tokens"] += completion_t
+                stats["total_tokens"] += total_t
+                stats["calls"] += 1
+
+                logger.info(
+                    "groq_service: call on key %s used %d tokens "
+                    "(prompt=%d, completion=%d) | key total=%d over %d calls",
+                    _mask(_current_key), total_t, prompt_t, completion_t,
+                    stats["total_tokens"], stats["calls"],
+                )
+            else:
+                logger.info(
+                    "groq_service: call on key %s succeeded but no usage "
+                    "data was returned by the SDK.",
+                    _mask(_current_key),
+                )
+
             return response.choices[0].message.content.strip()
- 
+
         except RateLimitError as e:
             last_error = e
             attempts += 1
@@ -209,7 +268,7 @@ def _create_with_rotation(messages, temperature):
                     except ValueError:
                         pass
             _rotate_key(cooldown_seconds=wait)
- 
+
         except AuthenticationError as e:
             last_error = e
             attempts += 1
@@ -221,7 +280,7 @@ def _create_with_rotation(messages, temperature):
             # Dead/invalid key - retire it for the life of this process.
             _cooldowns[_current_key] = float("inf")
             _rotate_key()
- 
+
         except APIConnectionError as e:
             last_error = e
             attempts += 1
@@ -233,7 +292,7 @@ def _create_with_rotation(messages, temperature):
             # fresh attempt - possibly via a different network path -
             # costs little. Short cooldown only.
             _rotate_key(cooldown_seconds=5)
- 
+
     logger.critical(
         "groq_service: all %d keys exhausted, invalid, or unreachable.",
         max_attempts,
@@ -241,7 +300,7 @@ def _create_with_rotation(messages, temperature):
     raise RuntimeError(
         f"All {max_attempts} Groq keys exhausted, invalid, or unreachable."
     ) from last_error
- 
+
 
 def _try_parse_json(text):
     """
@@ -388,12 +447,9 @@ Respond with ONLY a JSON object shaped like:
 # ============================================================
 # 3. generate_skill_tree
 #    Input:  profile + starting level
-#    Output: full 5-level categorized skill tree (JSON)
+#    Output: full 5-level categorized skill tree (JSON), with
+#            skill_type classification and dependencies
 # ============================================================
-"""
-REPLACE these two functions in backend/services/groq_service.py
-"""
-
 def generate_skill_tree(dream, academics, placement_level):
     """
     Generate the full 5-level skill tree WITH:
@@ -456,7 +512,7 @@ Rules:
    - "mathematical" : calculations, formulas, statistics, quantitative analysis
    - "practical"    : hands-on tasks, procedures, real-world application, tools
    - "mixed"        : requires both theory AND practical/mathematical elements
-   
+
    Base classification on the career context — not just the skill name.
    A "Patient Assessment" skill for a Nurse is "practical".
    A "Financial Ratios" skill for an Accountant is "mathematical".
@@ -677,7 +733,8 @@ Respond with ONLY a JSON object shaped like:
 
 # ============================================================
 # 6. generate_roadmap
-#    Input:  full context (dream, academics, skill tree, scores, gaps)
+#    Input:  full context (dream, academics, skill tree, scores, gaps,
+#             optional active_subskill for personalized remediation)
 #    Output: roadmap text + resource-type suggestions
 # ============================================================
 def generate_roadmap(
@@ -1046,6 +1103,7 @@ Respond with ONLY a JSON array of row objects shaped like:
 """
 
     return _call_groq(system_prompt, user_prompt, expect_json=True)
+
 
 # ============================================================
 # 10. generate_personalized_subskills
