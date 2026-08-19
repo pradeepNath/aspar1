@@ -1,139 +1,241 @@
 """
 routes/roadmap.py
-------------------
-Rewired to use the learner model (services/gap_analysis.py) instead
-of raw skill tree + basic scores. This is what makes the roadmap
-equitable — the AI receives each student's actual demonstrated
-strengths/weaknesses, not just their level and a generic skill list.
+-----------------
+Uses the older roadmap structure with personalized evidence.
 
-    POST /api/roadmap/generate
-    GET  /api/roadmap
+Priority:
+1. Active learner-specific remediation subskill
+2. Normal unlocked core skill
 """
 
 import json
-from flask import Blueprint, request, jsonify, g
+
+from flask import Blueprint, jsonify, g
 
 from config.db import get_db_connection
 from utils.auth import token_required
 from services.groq_service import generate_roadmap
-from services.gap_analysis import get_learner_model
 
 roadmap_bp = Blueprint("roadmap", __name__)
+
+
+def _build_roadmap_context(cursor, user_id, dream, current_level):
+    cursor.execute(
+        """
+        SELECT subject, grade, gpa
+        FROM academic_results
+        WHERE user_id = %s
+        ORDER BY uploaded_at ASC
+        """,
+        (user_id,),
+    )
+    academics = cursor.fetchall()
+
+    cursor.execute(
+        """
+        SELECT
+            id, level, category, skill_name, sequence_order,
+            status, skill_type, skill_category
+        FROM skill_tree
+        WHERE user_id = %s
+          AND career = %s
+          AND level <= %s
+        ORDER BY level ASC, sequence_order ASC
+        """,
+        (user_id, dream, current_level),
+    )
+    skill_tree = [dict(row) for row in cursor.fetchall()]
+
+    cursor.execute(
+        """
+        SELECT
+            qs.id AS session_id,
+            qs.test_type,
+            ROUND(
+                CAST(SUM(sc.score_out_of_10) AS NUMERIC)
+                / (COUNT(sc.id) * 10.0) * 100,
+                1
+            ) AS total_score_percent
+        FROM quiz_sessions qs
+        JOIN quiz_scores sc ON sc.session_id = qs.id
+        WHERE qs.user_id = %s
+        GROUP BY qs.id, qs.test_type
+        ORDER BY qs.id DESC
+        LIMIT 10
+        """,
+        (user_id,),
+    )
+    scores = [dict(row) for row in cursor.fetchall()]
+
+    cursor.execute(
+        """
+        SELECT weak_concepts
+        FROM skill_gap_analysis
+        WHERE user_id = %s
+        ORDER BY analyzed_at DESC
+        LIMIT 10
+        """,
+        (user_id,),
+    )
+
+    gaps = []
+
+    for row in cursor.fetchall():
+        try:
+            weak_concepts = json.loads(row["weak_concepts"] or "[]")
+            gaps.extend(
+                item.get("concept")
+                for item in weak_concepts
+                if item.get("concept")
+            )
+        except (TypeError, ValueError):
+            pass
+
+    gaps = list(dict.fromkeys(gaps))
+
+    cursor.execute(
+        """
+        SELECT
+            a.id,
+            a.skill_name,
+            a.concept,
+            a.skill_type,
+            a.reason,
+            st.skill_name AS parent_core_skill
+        FROM adaptive_skills a
+        JOIN skill_tree st ON st.id = a.parent_skill_id
+        WHERE a.user_id = %s
+          AND a.status = 'unlocked'
+        ORDER BY a.created_at ASC
+        LIMIT 1
+        """,
+        (user_id,),
+    )
+    active_subskill = cursor.fetchone()
+
+    return {
+        "academics": academics,
+        "skill_tree": skill_tree,
+        "scores": scores,
+        "gaps": gaps,
+        "active_subskill": (
+            dict(active_subskill) if active_subskill else None
+        ),
+    }
 
 
 @roadmap_bp.route("/roadmap/generate", methods=["POST"])
 @token_required
 def create_roadmap():
-    """
-    Generate (or regenerate) the student's roadmap using their full
-    learner model as evidence — this is the equity engine in action.
-
-    On success (201):
-        {
-          "version": 3,
-          "overview": "...",
-          "current_skill": {
-            "skill_name": "...",
-            "why_now": "...",
-            "what_to_learn": "...",
-            "resource_types": [...]
-          }
-        }
-    """
     conn = get_db_connection()
+
     try:
         with conn.cursor() as cursor:
-
-            # --- Profile + career ---
-            cursor.execute(
-                "SELECT dream_career FROM student_profiles WHERE user_id = %s",
-                (g.user_id,)
-            )
-            profile = cursor.fetchone()
-            if not profile:
-                return jsonify({"error": "Dream career not set"}), 422
-            dream = profile["dream_career"]
-
-            # --- Current level ---
-            cursor.execute(
-                "SELECT current_level FROM skill_levels WHERE user_id = %s AND career = %s",
-                (g.user_id, dream)
-            )
-            level_row = cursor.fetchone()
-            if not level_row:
-                return jsonify({"error": "Placement not completed yet"}), 422
-            current_level = level_row["current_level"]
-
-            # --- Find the current unlocked skill ---
             cursor.execute(
                 """
-                SELECT skill_name, skill_type, category
-                FROM skill_tree
-                WHERE user_id = %s AND career = %s AND level = %s
-                  AND status = 'unlocked'
-                ORDER BY sequence_order ASC
-                LIMIT 1
+                SELECT dream_career
+                FROM student_profiles
+                WHERE user_id = %s
                 """,
-                (g.user_id, dream, current_level)
+                (g.user_id,),
             )
-            current_skill_row = cursor.fetchone()
-            current_skill = dict(current_skill_row) if current_skill_row else None
+            profile = cursor.fetchone()
 
-            # --- Next version number ---
+            if not profile:
+                return jsonify({"error": "Dream career not set"}), 422
+
+            dream = profile["dream_career"]
+
+            cursor.execute(
+                """
+                SELECT current_level
+                FROM skill_levels
+                WHERE user_id = %s AND career = %s
+                """,
+                (g.user_id, dream),
+            )
+            level_row = cursor.fetchone()
+
+            if not level_row:
+                return jsonify({
+                    "error": "Placement not completed yet"
+                }), 422
+
+            current_level = level_row["current_level"]
+
             cursor.execute(
                 "SELECT MAX(version) AS max_v FROM roadmaps WHERE user_id = %s",
-                (g.user_id,)
+                (g.user_id,),
             )
-            ver_row      = cursor.fetchone()
-            next_version = (ver_row["max_v"] or 0) + 1
+            version_row = cursor.fetchone()
+            next_version = (version_row["max_v"] or 0) + 1
 
-        # --- Build the learner model (pure logic, no AI) ---
-        learner_model = get_learner_model(conn, g.user_id)
+            context = _build_roadmap_context(
+                cursor,
+                g.user_id,
+                dream,
+                current_level,
+            )
 
-        # --- AI call — receives learner model, writes personalized roadmap ---
         try:
-            result = generate_roadmap(dream, current_skill, learner_model)
-        except Exception as e:
-            print(f"[roadmap/generate] AI error: {e}")
-            import traceback; print(traceback.format_exc())
-            return jsonify({"error": "AI failed to generate roadmap. Please try again."}), 500
+            result = generate_roadmap(
+                dream=dream,
+                academics=context["academics"],
+                skill_tree=context["skill_tree"],
+                scores=context["scores"],
+                gaps=context["gaps"],
+                active_subskill=context["active_subskill"],
+            )
+        except Exception as error:
+            import traceback
+            print(f"[roadmap/generate] AI error: {error}")
+            print(traceback.format_exc())
+            return jsonify({
+                "error": "AI failed to generate roadmap. Please try again."
+            }), 500
 
-        overview          = result.get("overview", "")
-        current_skill_out = result.get("current_skill")
+        overview = result.get("overview", "")
+        current_skill = result.get("current_focus")
 
         if not overview:
-            return jsonify({"error": "AI returned an empty roadmap. Please try again."}), 500
+            return jsonify({
+                "error": "AI returned an empty roadmap. Please try again."
+            }), 500
 
         stored_payload = json.dumps({
-            "overview":      overview,
-            "current_skill": current_skill_out,
+            "focus_type": result.get("focus_type"),
+            "overview": overview,
+            "parent_core_skill": result.get("parent_core_skill"),
+            "current_skill": current_skill,
+            "next_core_skill": result.get("next_core_skill"),
         })
 
-        conn2 = get_db_connection()
-        try:
-            with conn2.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO roadmaps (user_id, roadmap_text, version)
-                    VALUES (%s, %s, %s)
-                    """,
-                    (g.user_id, stored_payload, next_version)
-                )
-        finally:
-            conn2.close()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO roadmaps (user_id, roadmap_text, version)
+                VALUES (%s, %s, %s)
+                """,
+                (g.user_id, stored_payload, next_version),
+            )
 
         response = {
-            "version":  next_version,
+            "version": next_version,
+            "focus_type": result.get("focus_type"),
             "overview": overview,
+            "parent_core_skill": result.get("parent_core_skill"),
+            "next_core_skill": result.get("next_core_skill"),
         }
-        if current_skill_out:
-            response["current_skill"] = current_skill_out
+
+        if current_skill:
+            # Kept as current_skill so your existing frontend still works.
+            response["current_skill"] = current_skill
 
         return jsonify(response), 201
 
-    except Exception as e:
+    except Exception as error:
         import traceback
-        print(f"[roadmap/generate] error: {e}")
+        print(f"[roadmap/generate] error: {error}")
         print(traceback.format_exc())
         return jsonify({"error": "Could not generate roadmap"}), 500
 
@@ -144,8 +246,9 @@ def create_roadmap():
 @roadmap_bp.route("/roadmap", methods=["GET"])
 @token_required
 def get_roadmap():
-    """Fetch the student's latest roadmap."""
+    """Fetch the learner's latest roadmap."""
     conn = get_db_connection()
+
     try:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -156,34 +259,41 @@ def get_roadmap():
                 ORDER BY version DESC
                 LIMIT 1
                 """,
-                (g.user_id,)
+                (g.user_id,),
             )
             row = cursor.fetchone()
 
         if not row:
-            return jsonify({"error": "No roadmap found. Generate one first."}), 404
+            return jsonify({
+                "error": "No roadmap found. Generate one first."
+            }), 404
 
         try:
-            payload       = json.loads(row["roadmap_text"])
-            overview      = payload.get("overview", "")
-            current_skill = payload.get("current_skill")
+            payload = json.loads(row["roadmap_text"])
         except (TypeError, ValueError):
-            overview      = row["roadmap_text"]
-            current_skill = None
+            payload = {
+                "overview": row["roadmap_text"],
+                "current_skill": None,
+            }
 
         response = {
-            "version":  row["version"],
-            "overview": overview,
+            "version": row["version"],
+            "focus_type": payload.get("focus_type", "core_skill"),
+            "overview": payload.get("overview", ""),
+            "parent_core_skill": payload.get("parent_core_skill"),
+            "next_core_skill": payload.get("next_core_skill"),
         }
-        if current_skill:
-            response["current_skill"] = current_skill
+
+        if payload.get("current_skill"):
+            response["current_skill"] = payload["current_skill"]
+
         if row.get("created_at"):
             response["created_at"] = row["created_at"].isoformat()
 
         return jsonify(response), 200
 
-    except Exception as e:
-        print(f"[roadmap/get] error: {e}")
+    except Exception as error:
+        print(f"[roadmap/get] error: {error}")
         return jsonify({"error": "Could not fetch roadmap"}), 500
 
     finally:

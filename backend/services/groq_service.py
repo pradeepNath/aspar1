@@ -680,148 +680,166 @@ Respond with ONLY a JSON object shaped like:
 #    Input:  full context (dream, academics, skill tree, scores, gaps)
 #    Output: roadmap text + resource-type suggestions
 # ============================================================
-def generate_roadmap(dream, current_skill, learner_model):
+def generate_roadmap(
+    dream,
+    academics,
+    skill_tree,
+    scores,
+    gaps,
+    active_subskill=None,
+):
     """
-    Generate a personalized roadmap focused on the student's current
-    unlocked skill, using their full learner model as evidence.
- 
-    IMPORTANT: ASPAR is a Roadmap System, not a Recommendation System.
-    Say WHAT to learn and WHAT TYPE of resource to seek — never give
-    specific links, course names, or step-by-step tutorials.
- 
+    Create a personalized roadmap without changing the shared core tree.
+
+    If active_subskill exists, it becomes the current learning focus.
+    Otherwise, the current unlocked core skill is the focus.
+
     Args:
-        dream:          dream career string
-        current_skill:  dict — the skill the student should focus on now
-                         {"skill_name": "...", "skill_type": "...",
-                          "category": "..."}
-                         or None if no skill is currently unlocked
-        learner_model:  dict from gap_analysis.get_learner_model()
-                         Contains: skill_mastery, strong_skills,
-                         weak_skills, persistent_gaps, academic_trend,
-                         overall_trend, passion_statement, pass_rate
- 
-    Returns:
-        {
-          "overview": "1-2 sentence orientation for current level",
-          "current_skill": {
-            "skill_name": "...",
-            "why_now": "...",
-            "what_to_learn": "...",
-            "resource_types": ["...", "..."]
-          }
-        }
- 
-    Equity in action: if learner_model shows weak_skills=["Statistics"]
-    and current_skill is "Supervised Learning" (which depends on
-    Statistics), the roadmap explicitly connects the two and tells
-    THIS student to revisit Statistics fundamentals first — a student
-    with strong Statistics skips straight to Supervised Learning content.
+        dream: Career name.
+        academics: Learner academic results.
+        skill_tree: Visible shared-core skills for this learner, including
+                    skill_name, category, skill_type, status, and level.
+        scores: Learner's past test-score data.
+        gaps: Demonstrated weak concepts.
+        active_subskill: Optional learner-specific remediation object:
+            {
+              "skill_name": "...",
+              "concept": "...",
+              "reason": "...",
+              "skill_type": "...",
+              "parent_core_skill": "..."
+            }
     """
-    system_prompt = (
-        "You are a mentor for ASPAR, a ROADMAP system - not a "
-        "recommendation system. You tell students WHAT to learn next and "
-        "WHAT KIND of resource to look for, focused on the single skill "
-        "they should study right now. You practice EQUITY: you use the "
-        "student's actual demonstrated strengths and weaknesses to decide "
-        "what they specifically need - not a generic template every "
-        "student gets. Two students at the same level with different "
-        "skill histories should receive noticeably different guidance. "
-        "You NEVER give specific links, named courses, or step-by-step "
-        "tutorials - only general resource TYPES. "
-        "You ALWAYS respond with strict JSON only."
+
+    current_core_skill = next(
+        (skill for skill in skill_tree if skill.get("status") == "unlocked"),
+        None,
     )
- 
-    if not current_skill:
-        current_skill_line = "No skill is currently unlocked (student has completed all skills at this level)."
+
+    if active_subskill:
+        focus_type = "personalized_subskill"
+        focus = {
+            "skill_name": active_subskill["skill_name"],
+            "concept": active_subskill.get("concept", "Targeted practice"),
+            "skill_type": active_subskill.get("skill_type", "mixed"),
+            "parent_core_skill": active_subskill.get(
+                "parent_core_skill",
+                current_core_skill.get("skill_name") if current_core_skill else None,
+            ),
+            "reason": active_subskill.get("reason", ""),
+        }
+    elif current_core_skill:
+        focus_type = "core_skill"
+        focus = {
+            "skill_name": current_core_skill["skill_name"],
+            "concept": None,
+            "skill_type": current_core_skill.get("skill_type", "mixed"),
+            "parent_core_skill": None,
+            "reason": None,
+        }
     else:
-        current_skill_line = (
-            f"Current skill to focus on: \"{current_skill['skill_name']}\" "
-            f"(type: {current_skill.get('skill_type', 'mixed')}, "
-            f"category: {current_skill.get('category', 'General')})"
-        )
- 
-    skill_mastery_lines = "\n".join(
-        f"  - {s['skill_name']} ({s['skill_type']}): {s['score']}% "
-        f"[{s['trend']}, attempt #{s['attempts']}]"
-        for s in learner_model.get("skill_mastery", [])
-    ) or "  No skill tests taken yet."
- 
+        focus_type = "none"
+        focus = None
+
+    system_prompt = (
+        "You are a mentor for ASPAR, an adaptive student roadmap system. "
+        "You tell the learner WHAT to learn next and what TYPES of resources "
+        "to seek. You never recommend named courses, links, or step-by-step "
+        "tutorials. You NEVER change, add, remove, or reorder core skills. "
+        "You ALWAYS return strict JSON only."
+    )
+
     user_prompt = f"""
 Dream career: "{dream}"
-Student's passion statement: "{learner_model.get('passion_statement', '')}"
-{current_skill_line}
- 
-STUDENT'S FULL EVIDENCE (this is what makes the roadmap equitable):
- 
-Per-skill test scores:
-{skill_mastery_lines}
- 
-Strong skills (>=80%): {', '.join(learner_model.get('strong_skills', [])) or 'None yet'}
-Weak skills (<60%): {', '.join(learner_model.get('weak_skills', [])) or 'None yet'}
-Persistent gaps (struggled across multiple attempts): {', '.join(learner_model.get('persistent_gaps', [])) or 'None'}
- 
-Academic trend: {learner_model.get('academic_trend', 'insufficient_data')}
-Overall learning trend: {learner_model.get('overall_trend', 'stable')}
-Test pass rate: {learner_model.get('pass_rate', 0)}%
- 
-INSTRUCTIONS:
- 
-1. Write "overview" (1-2 sentences) orienting the student at their
-   current level in general terms.
- 
-2. Write "current_skill" object about ONLY the current unlocked skill:
- 
-   - "skill_name": exact name from current_skill above
-   - "why_now": 1-2 sentences. CRITICALLY: if any of the student's
-     weak_skills or persistent_gaps are prerequisites or related to
-     this current skill, name that connection explicitly. Example:
-     "Since Supervised Learning relies heavily on probability theory,
-     and your Statistics score of 43% shows this is a gap, strengthening
-     that foundation first will make this skill much easier to grasp."
-     If no weak skills are relevant, explain why this skill fits the
-     natural progression instead.
- 
-   - "what_to_learn": 2-3 sentences. Adjust content based on
-     skill_type: for "mathematical" skills emphasize formulas and
-     calculation practice; for "practical" skills emphasize hands-on
-     exercises and real scenarios; for "conceptual" skills emphasize
-     reading and understanding principles; for "mixed" balance both.
-     If the student has a relevant persistent_gap, explicitly say to
-     address that specific sub-topic first.
- 
-   - "resource_types": 2-4 general resource types matched to skill_type.
-     Mathematical -> "practice problem sets", "formula reference sheets"
-     Practical -> "hands-on exercises", "case studies", "simulations"
-     Conceptual -> "official documentation", "explanatory articles"
- 
-3. If the student's overall_trend is "declining", acknowledge it
-   gently and suggest revisiting fundamentals before pushing forward.
-   If "improving", acknowledge their progress genuinely.
- 
-4. If passion_statement is provided, connect the current skill to
-   their stated motivation in one natural sentence.
- 
-Keep it concise - readable in under 20 seconds. Never use bullet
-points inside the text fields - flowing sentences only.
- 
-Respond with ONLY a JSON object:
-{{
-  "overview": "...",
-  "current_skill": {{
-    "skill_name": "...",
-    "why_now": "...",
-    "what_to_learn": "...",
-    "resource_types": ["...", "..."]
-  }}
-}}
- 
-If current_skill_line says no skill is unlocked, omit "current_skill"
-entirely and just return {{"overview": "..."}}.
-"""
- 
-    return _call_groq(system_prompt, user_prompt, expect_json=True)
- 
 
+Academic results:
+{json.dumps(academics)}
+
+Shared core skill tree:
+{json.dumps(skill_tree)}
+
+Learner's past test scores:
+{json.dumps(scores)}
+
+Demonstrated knowledge gaps:
+{json.dumps(gaps)}
+
+Focus type: "{focus_type}"
+
+Current focus:
+{json.dumps(focus)}
+
+Rules:
+
+1. The shared core skill tree is fixed for all learners in this career.
+   Do not suggest changing its skills, order, level, or dependencies.
+
+2. If focus_type is "personalized_subskill":
+   - The learner must focus on this remediation subskill first.
+   - Explain that it supports the parent core skill.
+   - Focus only on the demonstrated weak concept.
+   - State that after mastering it, the learner returns to the normal
+     core-skill sequence.
+
+3. If focus_type is "core_skill":
+   - Explain why this shared core skill is the next normal step.
+   - Use academic results, scores, and gaps only to personalize the
+     explanation and learning emphasis—not to change the core skill.
+
+4. If focus_type is "none":
+   - Return only an overview explaining that no current skill is available.
+
+5. Match resource types to the skill type:
+   - conceptual: explanatory articles, official documentation, summaries
+   - mathematical: practice problem sets, formula sheets, worked examples
+   - practical: hands-on exercises, simulations, case studies
+   - mixed: a balanced combination
+
+Return ONLY this JSON object:
+
+{{
+  "focus_type": "core_skill",
+  "overview": "One or two sentences about the learner's current stage.",
+  "parent_core_skill": null,
+  "current_focus": {{
+    "skill_name": "Exact current skill name",
+    "concept": null,
+    "why_now": "Why this is the correct next focus for this learner.",
+    "what_to_learn": "What the learner should focus on.",
+    "resource_types": ["resource type 1", "resource type 2"],
+    "return_to_core_sequence": false
+  }},
+  "next_core_skill": "The core skill to resume or continue"
+}}
+"""
+
+    roadmap = _call_groq(
+        system_prompt,
+        user_prompt,
+        expect_json=True,
+        temperature=0.3,
+    )
+
+    # Protect the core path if the model returns an unexpected value.
+    roadmap["focus_type"] = focus_type
+    roadmap["parent_core_skill"] = (
+        focus.get("parent_core_skill") if focus else None
+    )
+
+    if focus_type == "personalized_subskill":
+        roadmap.setdefault("current_focus", {})
+        roadmap["current_focus"]["skill_name"] = focus["skill_name"]
+        roadmap["current_focus"]["concept"] = focus["concept"]
+        roadmap["current_focus"]["return_to_core_sequence"] = True
+        roadmap["next_core_skill"] = focus["parent_core_skill"]
+
+    elif focus_type == "core_skill" and current_core_skill:
+        roadmap.setdefault("current_focus", {})
+        roadmap["current_focus"]["skill_name"] = current_core_skill["skill_name"]
+        roadmap["current_focus"]["return_to_core_sequence"] = False
+        roadmap["next_core_skill"] = current_core_skill["skill_name"]
+
+    return roadmap
 
 # ============================================================
 # 7. evaluate_progress

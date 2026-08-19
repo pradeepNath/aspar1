@@ -132,3 +132,76 @@ CREATE TABLE last_attempt_log (
 ALTER TABLE quiz_scores
 ADD CONSTRAINT uq_quiz_scores_session_question
 UNIQUE (session_id, question_id);
+
+-- Add skill_type to skill_tree
+ALTER TABLE skill_tree ADD COLUMN IF NOT EXISTS skill_type VARCHAR(20) DEFAULT 'mixed';
+
+-- Add skill_category (core vs adaptive)
+ALTER TABLE skill_tree ADD COLUMN IF NOT EXISTS skill_category VARCHAR(10) DEFAULT 'core';
+
+-- Skill dependencies table
+CREATE TABLE IF NOT EXISTS skill_dependencies (
+    id                   SERIAL PRIMARY KEY,
+    skill_id             INT NOT NULL REFERENCES skill_tree(id) ON DELETE CASCADE,
+    prerequisite_skill_id INT NOT NULL REFERENCES skill_tree(id) ON DELETE CASCADE,
+    created_at           TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (skill_id, prerequisite_skill_id)
+);
+
+-- Question concept mapping
+ALTER TABLE quiz_questions ADD COLUMN IF NOT EXISTS concept VARCHAR(150);
+
+-- Skill gap analysis
+CREATE TABLE IF NOT EXISTS skill_gap_analysis (
+    id               SERIAL PRIMARY KEY,
+    user_id          INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    skill_id         INT NOT NULL REFERENCES skill_tree(id) ON DELETE CASCADE,
+    session_id       INT NOT NULL REFERENCES quiz_sessions(id) ON DELETE CASCADE,
+    skill_type       VARCHAR(20),
+    overall_score    FLOAT,
+    weak_concepts    TEXT,
+    strong_concepts  TEXT,
+    score_trend      VARCHAR(15),
+    score_delta      FLOAT,
+    attempt_number   INT DEFAULT 1,
+    blocks_next      BOOLEAN DEFAULT FALSE,
+    analyzed_at      TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (user_id, skill_id, session_id)
+);
+
+-- Adaptive subskills tracking
+CREATE TABLE IF NOT EXISTS adaptive_skills (
+    id              SERIAL PRIMARY KEY,
+    user_id         INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    parent_skill_id INT NOT NULL REFERENCES skill_tree(id) ON DELETE CASCADE,
+    skill_name      VARCHAR(150) NOT NULL,
+    skill_type      VARCHAR(20),
+    reason          TEXT,
+    status          VARCHAR(10) DEFAULT 'unlocked'
+                    CHECK (status IN ('unlocked', 'learned')),
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Career practice submissions
+CREATE TABLE IF NOT EXISTS career_practice (
+    id              SERIAL PRIMARY KEY,
+    user_id         INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id      INT NOT NULL REFERENCES quiz_sessions(id) ON DELETE CASCADE,
+    level           INT NOT NULL,
+    task_text       TEXT NOT NULL,
+    submission_text TEXT,
+    evaluation      TEXT,
+    overall_score   FLOAT,
+    submitted_at    TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'uq_last_attempt_user_skill'
+    ) THEN
+        ALTER TABLE last_attempt_log 
+        ADD CONSTRAINT uq_last_attempt_user_skill UNIQUE (user_id, skill_id);
+    END IF;
+END $$;
