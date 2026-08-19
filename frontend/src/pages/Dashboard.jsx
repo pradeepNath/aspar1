@@ -3,6 +3,16 @@ import { useNavigate } from "react-router-dom";
 import Navbar from "../components/Navbar";
 import api from "../utils/api";
 
+function resourceLinks(resources = []) {
+  return resources.map(resource => ({
+    ...resource,
+    href: resource.destination === "video"
+      ? `https://www.youtube.com/results?search_query=${encodeURIComponent(resource.search_query)}`
+      : `https://www.google.com/search?q=${encodeURIComponent(resource.search_query)}`,
+    icon: resource.destination === "video" ? "▶" : "↗",
+  }));
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [loading,      setLoading]      = useState(true);
@@ -76,7 +86,9 @@ export default function Dashboard() {
   // do agree. If they disagree, the AI guidance is stale enough to be
   // misleading, so we show a lightweight "study this" prompt instead.
   const actualUnlockedSkill = lvSkills.find(s => s.status === "unlocked");
+  const hasActivePracticeBranch = roadmap?.focus_type === "personalized_subskill";
   const roadmapMatchesReality =
+    hasActivePracticeBranch ||
     !roadmap?.current_skill ||
     !actualUnlockedSkill ||
     roadmap.current_skill.skill_name === actualUnlockedSkill.skill_name;
@@ -157,7 +169,7 @@ export default function Dashboard() {
                       }}>
                         <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
                           <span style={{ fontSize:"0.68rem", fontWeight:800, letterSpacing:"0.08em", color:"var(--primary-lt)", background:"rgba(99,102,241,0.18)", padding:"3px 9px", borderRadius:12 }}>
-                            CURRENT SKILL
+                            {hasActivePracticeBranch ? "PRACTICE BRANCH" : "CURRENT SKILL"}
                           </span>
                           <span style={{ fontWeight:700, color:"#fff", fontSize:"0.92rem" }}>
                             {roadmap.current_skill.skill_name}
@@ -174,14 +186,25 @@ export default function Dashboard() {
                           {roadmap.current_skill.what_to_learn}
                         </p>
 
-                        {roadmap.current_skill.resource_types?.length > 0 && (
+                        {roadmap.current_skill.completed_subskill && (
+                          <p style={{ fontSize:"0.8rem", lineHeight:1.55, margin:"0 0 12px", color:"#6ee7b7" }}>
+                            ✓ Completed practice branch: {roadmap.current_skill.completed_subskill}. You’re now returning to the core skill.
+                          </p>
+                        )}
+
+                        {roadmap.current_skill.learning_resources?.length > 0 && (
                           <div>
                             <p style={{ fontSize:"0.68rem", fontWeight:700, letterSpacing:"0.08em", color:"var(--text-3)", marginBottom:7 }}>
-                              LOOK FOR
+                              USEFUL RESOURCES
                             </p>
-                            <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                              {roadmap.current_skill.resource_types.map((rt,i) => (
-                                <span key={i} style={{ background:"rgba(6,182,212,0.1)", color:"#67e8f9", border:"1px solid rgba(6,182,212,0.25)", borderRadius:20, padding:"3px 10px", fontSize:"0.78rem" }}>{rt}</span>
+                            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(145px, 1fr))", gap:8 }}>
+                              {resourceLinks(roadmap.current_skill.learning_resources).map(resource => (
+                                <a key={resource.label} href={resource.href} target="_blank" rel="noreferrer" style={{ textDecoration:"none", background:"rgba(6,182,212,0.07)", border:"1px solid rgba(6,182,212,0.22)", borderRadius:9, padding:"9px 10px", display:"block" }}>
+                                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:6, color:"#67e8f9", fontSize:"0.76rem", fontWeight:700 }}>
+                                    {resource.label}<span>{resource.icon}</span>
+                                  </div>
+                                  <div style={{ color:"var(--text-3)", fontSize:"0.67rem", lineHeight:1.35, marginTop:3 }}>{resource.description}</div>
+                                </a>
                               ))}
                             </div>
                           </div>

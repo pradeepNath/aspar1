@@ -134,6 +134,30 @@ def _build_roadmap_context(cursor, user_id, dream, current_level):
     )
     active_subskill = cursor.fetchone()
 
+    # Keep the most recently created completed remediation branch in the
+    # context too. It lets the roadmap explain the learner's transition
+    # back into its parent core skill instead of abruptly sounding generic.
+    cursor.execute(
+        """
+        SELECT
+            a.id,
+            a.skill_name,
+            a.concept,
+            a.skill_type,
+            a.reason,
+            st.skill_name AS parent_core_skill
+        FROM adaptive_skills a
+        JOIN skill_tree st ON st.id = a.parent_skill_id
+        WHERE a.user_id = %s
+          AND a.status = 'learned'
+          AND st.status = 'unlocked'
+        ORDER BY a.created_at DESC, a.id DESC
+        LIMIT 1
+        """,
+        (user_id,),
+    )
+    completed_subskill = cursor.fetchone()
+
     return {
         "academics": academics,
         "skill_tree": skill_tree,
@@ -142,6 +166,10 @@ def _build_roadmap_context(cursor, user_id, dream, current_level):
         "active_subskill": (
             _make_serializable(dict(active_subskill))
             if active_subskill else None
+        ),
+        "completed_subskill": (
+            _make_serializable(dict(completed_subskill))
+            if completed_subskill else None
         ),
     }
 
@@ -207,6 +235,7 @@ def create_roadmap():
                 scores=context["scores"],
                 gaps=context["gaps"],
                 active_subskill=context["active_subskill"],
+                completed_subskill=context["completed_subskill"],
             )
         except Exception as error:
             import traceback

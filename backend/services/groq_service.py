@@ -751,12 +751,14 @@ def generate_roadmap(
     scores,
     gaps,
     active_subskill=None,
+    completed_subskill=None,
 ):
     """
     Create a personalized roadmap without changing the shared core tree.
 
     If active_subskill exists, it becomes the current learning focus.
-    Otherwise, the current unlocked core skill is the focus.
+    If a remediation branch was just completed, explain the transition back
+    to its parent core skill. Otherwise, use the current unlocked core skill.
 
     Args:
         dream: Career name.
@@ -773,6 +775,8 @@ def generate_roadmap(
               "skill_type": "...",
               "parent_core_skill": "..."
             }
+        completed_subskill: Most recently completed remediation object, with
+            the same shape as active_subskill.
     """
 
     current_core_skill = next(
@@ -791,6 +795,16 @@ def generate_roadmap(
                 current_core_skill.get("skill_name") if current_core_skill else None,
             ),
             "reason": active_subskill.get("reason", ""),
+        }
+    elif completed_subskill and current_core_skill:
+        focus_type = "return_to_core"
+        focus = {
+            "skill_name": current_core_skill["skill_name"],
+            "concept": completed_subskill.get("concept", ""),
+            "skill_type": current_core_skill.get("skill_type", "mixed"),
+            "parent_core_skill": completed_subskill.get("parent_core_skill"),
+            "completed_subskill": completed_subskill.get("skill_name"),
+            "reason": completed_subskill.get("reason", ""),
         }
     elif current_core_skill:
         focus_type = "core_skill"
@@ -848,16 +862,24 @@ Rules:
 3. If focus_type is "core_skill":
    - Explain why this shared core skill is the next normal step.
    - Use academic results, scores, and gaps only to personalize the
-     explanation and learning emphasis—not to change the core skill.
+    explanation and learning emphasis—not to change the core skill.
 
-4. If focus_type is "none":
+4. If focus_type is "return_to_core":
+   - Acknowledge the completed remediation subskill by name.
+   - Explain how it supports the current core skill and what to do next.
+   - Keep the current core skill as the exact current_focus skill_name.
+
+5. If focus_type is "none":
    - Return only an overview explaining that no current skill is available.
 
-5. Match resource types to the skill type:
-   - conceptual: explanatory articles, official documentation, summaries
-   - mathematical: practice problem sets, formula sheets, worked examples
-   - practical: hands-on exercises, simulations, case studies
-   - mixed: a balanced combination
+6. Make why_now and what_to_learn specific but scannable: each must be one
+   or two short sentences, with concrete concepts or actions.
+
+7. Recommend resources appropriate to the career and skill—not just software
+   resources. For example, use professional bodies and clinical guidelines for
+   healthcare, portfolios and briefs for design, case studies for business,
+   labs or simulations for science, and official references for technical work.
+   Do not invent direct URLs or named videos.
 
 Return ONLY this JSON object:
 
@@ -870,7 +892,20 @@ Return ONLY this JSON object:
     "concept": null,
     "why_now": "Why this is the correct next focus for this learner.",
     "what_to_learn": "What the learner should focus on.",
-    "resource_types": ["resource type 1", "resource type 2"],
+    "learning_resources": [
+      {
+        "label": "Short resource label",
+        "description": "A brief, useful explanation of what the learner will find.",
+        "search_query": "Specific search terms for this skill and career",
+        "destination": "web"
+      },
+      {
+        "label": "Video search label",
+        "description": "What to look for in a video.",
+        "search_query": "Specific video search terms for this skill",
+        "destination": "video"
+      }
+    ],
     "return_to_core_sequence": false
   }},
   "next_core_skill": "The core skill to resume or continue"
@@ -884,6 +919,26 @@ Return ONLY this JSON object:
         temperature=0.3,
     )
 
+    # Keep the resource contract compact and safe for the frontend. The UI
+    # creates the actual search link, so the model never needs to invent URLs.
+    current_focus = roadmap.get("current_focus") or {}
+    resources = current_focus.get("learning_resources")
+    if not isinstance(resources, list):
+        resources = []
+    current_focus["learning_resources"] = [
+        {
+            "label": str(item.get("label") or "Learning resource")[:80],
+            "description": str(item.get("description") or "")[:180],
+            "search_query": str(item.get("search_query") or "")[:180],
+            "destination": (
+                "video" if item.get("destination") == "video" else "web"
+            ),
+        }
+        for item in resources[:3]
+        if isinstance(item, dict) and item.get("search_query")
+    ]
+    roadmap["current_focus"] = current_focus
+
     # Protect the core path if the model returns an unexpected value.
     roadmap["focus_type"] = focus_type
     roadmap["parent_core_skill"] = (
@@ -896,6 +951,13 @@ Return ONLY this JSON object:
         roadmap["current_focus"]["concept"] = focus["concept"]
         roadmap["current_focus"]["return_to_core_sequence"] = True
         roadmap["next_core_skill"] = focus["parent_core_skill"]
+
+    elif focus_type == "return_to_core" and current_core_skill:
+        roadmap.setdefault("current_focus", {})
+        roadmap["current_focus"]["skill_name"] = current_core_skill["skill_name"]
+        roadmap["current_focus"]["completed_subskill"] = focus["completed_subskill"]
+        roadmap["current_focus"]["return_to_core_sequence"] = True
+        roadmap["next_core_skill"] = current_core_skill["skill_name"]
 
     elif focus_type == "core_skill" and current_core_skill:
         roadmap.setdefault("current_focus", {})

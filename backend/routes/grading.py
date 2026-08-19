@@ -174,7 +174,9 @@ def run_grading():
                 )
 
             # Analyze all skill tests using your existing gap_analysis.py.
-            if test_type == "skill_test" and skill_id:
+            # Subskill quizzes are tracked on adaptive_skills and must not
+            # affect the parent core skill's gap-analysis history.
+            if test_type == "skill_test" and skill_id and not adaptive_skill_id:
                 try:
                     gap_data = analyze_skill_gaps(
                         conn=conn,

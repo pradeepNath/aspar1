@@ -85,7 +85,9 @@ export default function Quiz() {
       const grading    = gradingRes.data;
 
       let skillResult = null, progressResult = null;
-      if (test_type === "skill_test" && grading.total_score_percent >= 80) {
+      // A personalized subskill is completed by grading.py. Only a passed
+      // core-skill test should unlock the next core skill here.
+      if (test_type === "skill_test" && !adaptive_skill_id && grading.total_score_percent >= 80) {
         setStatus("Unlocking next skill…");
         const sr = await api.post("/skills/complete", { skill_id });
         skillResult = sr.data;
