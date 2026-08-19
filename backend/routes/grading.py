@@ -4,7 +4,7 @@ routes/grading.py
 Grades answers, returns concept-level performance, runs gap analysis,
 and creates learner-specific remediation subskills when needed.
 """
-
+import json
 from flask import Blueprint, request, jsonify, g
 
 from config.db import get_db_connection
@@ -13,6 +13,7 @@ from services.groq_service import (
     grade_answers,
     decide_placement_level,
     generate_personalized_subskills,
+    generate_roadmap,
 )
 from services.gap_analysis import analyze_skill_gaps
 
@@ -207,19 +208,242 @@ def run_grading():
                 ]
 
             # Passing a remediation test completes only that remediation skill.
+                        # ---------------------------------------------------------
+            # REGENERATE ROADMAP AFTER PERSONALIZED SUBSKILL CREATION
+            # ---------------------------------------------------------
+            #
+            # If this skill test produced remediation subskills, the
+            # learner's roadmap must immediately be regenerated so the
+            # newly-created subskill becomes the current learning focus.
+            #
+            # This keeps the shared core skill tree unchanged.
+            # Only the learner's roadmap is personalized.
+            # ---------------------------------------------------------
+
             if (
                 test_type == "skill_test"
-                and adaptive_skill_id
-                and total_score_percent >= 80
+                and skill_id
+                and not adaptive_skill_id
+                and personalized_subskills
             ):
-                cursor.execute(
-                    """
-                    UPDATE adaptive_skills
-                    SET status = 'learned'
-                    WHERE id = %s AND user_id = %s
-                    """,
-                    (adaptive_skill_id, g.user_id),
-                )
+                try:
+                    # Get the learner's profile.
+                    cursor.execute(
+                        """
+                        SELECT dream_career
+                        FROM student_profiles
+                        WHERE user_id = %s
+                        """,
+                        (g.user_id,),
+                    )
+                    profile = cursor.fetchone()
+
+                    if profile:
+                        dream = profile["dream_career"]
+
+                        # Current roadmap level.
+                        cursor.execute(
+                            """
+                            SELECT current_level
+                            FROM skill_levels
+                            WHERE user_id = %s
+                              AND career = %s
+                            """,
+                            (g.user_id, dream),
+                        )
+                        level_row = cursor.fetchone()
+
+                        current_level = (
+                            level_row["current_level"]
+                            if level_row
+                            else level
+                        )
+
+                        # Academic background.
+                        cursor.execute(
+                            """
+                            SELECT subject, grade, gpa
+                            FROM academic_results
+                            WHERE user_id = %s
+                            ORDER BY uploaded_at ASC
+                            """,
+                            (g.user_id,),
+                        )
+                        academics = [
+                            dict(row)
+                            for row in cursor.fetchall()
+                        ]
+
+                        # Current shared core tree.
+                        cursor.execute(
+                            """
+                            SELECT
+                                id,
+                                level,
+                                category,
+                                skill_name,
+                                sequence_order,
+                                status,
+                                skill_type,
+                                skill_category
+                            FROM skill_tree
+                            WHERE user_id = %s
+                              AND career = %s
+                              AND level <= %s
+                            ORDER BY level ASC, sequence_order ASC
+                            """,
+                            (
+                                g.user_id,
+                                dream,
+                                current_level,
+                            ),
+                        )
+                        skill_tree = [
+                            dict(row)
+                            for row in cursor.fetchall()
+                        ]
+
+                        # Recent scores.
+                        cursor.execute(
+                            """
+                            SELECT
+                                qs.id AS session_id,
+                                qs.test_type,
+                                ROUND(
+                                    CAST(
+                                        SUM(sc.score_out_of_10)
+                                        AS NUMERIC
+                                    )
+                                    / (
+                                        COUNT(sc.id) * 10.0
+                                    ) * 100,
+                                    1
+                                ) AS total_score_percent
+                            FROM quiz_sessions qs
+                            JOIN quiz_scores sc
+                                ON sc.session_id = qs.id
+                            WHERE qs.user_id = %s
+                            GROUP BY qs.id, qs.test_type
+                            ORDER BY qs.id DESC
+                            LIMIT 10
+                            """,
+                            (g.user_id,),
+                        )
+
+                        scores = []
+                        for row in cursor.fetchall():
+                            score_row = dict(row)
+
+                            if score_row.get("total_score_percent") is not None:
+                                score_row["total_score_percent"] = float(
+                                    score_row["total_score_percent"]
+                                )
+
+                            scores.append(score_row)
+
+                        # Get all current weak concepts.
+                        gaps = list(knowledge_gaps)
+
+                        if gap_data:
+                            for item in gap_data.get(
+                                "weak_concepts",
+                                [],
+                            ):
+                                concept = item.get("concept")
+                                if concept and concept not in gaps:
+                                    gaps.append(concept)
+
+                        # IMPORTANT:
+                        # Use the newly-created subskill, not an older
+                        # adaptive skill belonging to this learner.
+                        newest_subskill = personalized_subskills[0]
+
+                        active_subskill = {
+                            "id": newest_subskill["id"],
+                            "skill_name": newest_subskill["skill_name"],
+                            "concept": newest_subskill["concept"],
+                            "skill_type": newest_subskill["skill_type"],
+                            "reason": newest_subskill["reason"],
+                            "parent_core_skill": (
+                                parent_core_skill["skill_name"]
+                                if parent_core_skill
+                                else None
+                            ),
+                        }
+
+                        # Generate a NEW personalized roadmap.
+                        roadmap_result = generate_roadmap(
+                            dream=dream,
+                            academics=academics,
+                            skill_tree=skill_tree,
+                            scores=scores,
+                            gaps=gaps,
+                            active_subskill=active_subskill,
+                        )
+
+                        # Store it as the newest roadmap version.
+                        cursor.execute(
+                            """
+                            SELECT MAX(version) AS max_v
+                            FROM roadmaps
+                            WHERE user_id = %s
+                            """,
+                            (g.user_id,),
+                        )
+                        version_row = cursor.fetchone()
+
+                        next_version = (
+                            (version_row["max_v"] or 0) + 1
+                            if version_row
+                            else 1
+                        )
+
+                        stored_payload = json.dumps({
+                            "focus_type": roadmap_result.get(
+                                "focus_type"
+                            ),
+                            "overview": roadmap_result.get(
+                                "overview",
+                                "",
+                            ),
+                            "parent_core_skill": roadmap_result.get(
+                                "parent_core_skill"
+                            ),
+                            "current_skill": roadmap_result.get(
+                                "current_focus"
+                            ),
+                            "next_core_skill": roadmap_result.get(
+                                "next_core_skill"
+                            ),
+                        })
+
+                        cursor.execute(
+                            """
+                            INSERT INTO roadmaps
+                                (user_id, roadmap_text, version)
+                            VALUES (%s, %s, %s)
+                            """,
+                            (
+                                g.user_id,
+                                stored_payload,
+                                next_version,
+                            ),
+                        )
+
+                        print(
+                            "[grading/run] personalized roadmap "
+                            f"generated successfully: "
+                            f"{active_subskill['skill_name']}"
+                        )
+
+                except Exception as error:
+                    import traceback
+
+                    print(
+                        "[grading/run] personalized roadmap generation "
+                        f"error: {error}"
+                    )
+                    print(traceback.format_exc())
 
             # A failed core-skill test can create learner-specific subskills.
             if (
