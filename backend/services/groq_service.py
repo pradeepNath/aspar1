@@ -1046,3 +1046,68 @@ Respond with ONLY a JSON array of row objects shaped like:
 """
 
     return _call_groq(system_prompt, user_prompt, expect_json=True)
+
+# ============================================================
+# 10. generate_personalized_subskills
+#     (called ONLY after a learner performs poorly on a skill test)
+#     Input:  existing core skill + concept-level performance data
+#     Output: learner-specific remediation subskills
+#
+#     IMPORTANT:
+#     - Creates temporary subskills only for demonstrated weak concepts.
+#     - Never creates, removes, renames, or reorders shared core skills.
+#     - After these subskills are completed, the learner returns to the
+#       normal shared core-skill sequence.
+# ============================================================
+def generate_personalized_subskills(core_skill, concept_performance):
+    """
+    Create temporary learner-specific remediation steps.
+    It cannot modify or replace any core skill.
+    """
+    weak_concepts = [
+        item for item in concept_performance
+        if float(item.get("score_percent", 100)) < 50
+    ]
+
+    if not weak_concepts:
+        return []
+
+    system_prompt = (
+        "You create short learner-specific remediation subskills for ASPAR. "
+        "You NEVER modify, add, remove, rename, or reorder shared core skills. "
+        "You ALWAYS respond with strict JSON only."
+    )
+
+    user_prompt = f"""
+Parent core skill:
+{json.dumps(core_skill)}
+
+Demonstrated weak concepts:
+{json.dumps(weak_concepts)}
+
+Create 1-3 temporary remediation subskills.
+
+Rules:
+- Every subskill must directly address a weak concept.
+- These are beneath the parent core skill only.
+- Do not create a new core skill.
+- Do not include concepts with score 50% or above.
+
+Return ONLY:
+
+[
+  {{
+    "concept": "Hotfix Workflow",
+    "skill_name": "Practice Hotfix Branch Integration",
+    "skill_type": "practical",
+    "reason": "The learner scored 0% on the hotfix workflow concept."
+  }}
+]
+"""
+
+    return _call_groq(
+        system_prompt,
+        user_prompt,
+        expect_json=True,
+        temperature=0.2,
+    )

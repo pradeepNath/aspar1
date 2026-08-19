@@ -205,3 +205,41 @@ BEGIN
         ADD CONSTRAINT uq_last_attempt_user_skill UNIQUE (user_id, skill_id);
     END IF;
 END $$;
+
+-- One standardized core tree per career
+CREATE TABLE IF NOT EXISTS career_core_trees (
+    id SERIAL PRIMARY KEY,
+    career_name VARCHAR(150) NOT NULL,
+    normalized_career VARCHAR(150) NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS career_core_skills (
+    id SERIAL PRIMARY KEY,
+    core_tree_id INT NOT NULL
+        REFERENCES career_core_trees(id) ON DELETE CASCADE,
+    level INT NOT NULL CHECK (level BETWEEN 1 AND 5),
+    category VARCHAR(150) NOT NULL,
+    skill_name VARCHAR(150) NOT NULL,
+    sequence_order INT NOT NULL,
+    skill_type VARCHAR(20) NOT NULL DEFAULT 'mixed',
+    UNIQUE (core_tree_id, level, sequence_order),
+    UNIQUE (core_tree_id, skill_name)
+);
+
+-- Existing skill_tree becomes the learner's progress copy of a core skill.
+ALTER TABLE skill_tree
+ADD COLUMN IF NOT EXISTS core_skill_id INT
+REFERENCES career_core_skills(id) ON DELETE SET NULL;
+
+-- Existing adaptive_skills becomes learner-specific personalized subskills.
+ALTER TABLE adaptive_skills
+ADD COLUMN IF NOT EXISTS concept VARCHAR(150);
+
+ALTER TABLE quiz_sessions
+ADD COLUMN IF NOT EXISTS adaptive_skill_id INT
+REFERENCES adaptive_skills(id) ON DELETE SET NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_adaptive_skill_concept
+ON adaptive_skills (user_id, parent_skill_id, concept)
+WHERE concept IS NOT NULL;
