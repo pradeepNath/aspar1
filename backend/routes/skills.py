@@ -9,6 +9,7 @@ adaptive_skills     = learner-only remediation subskills
 """
 
 import json
+from decimal import Decimal
 
 from flask import Blueprint, request, jsonify, g
 
@@ -18,6 +19,31 @@ from services.curriculum_service import assign_tree_to_learner
 from services.groq_service import generate_roadmap
 
 skills_bp = Blueprint("skills", __name__)
+
+
+def _make_serializable(obj):
+    """
+    Recursively convert psycopg2 Decimal (and any other non-JSON-native
+    types) into plain Python types, so this data can safely be passed
+    into json.dumps() inside generate_roadmap()'s prompt-building.
+
+    NUMERIC/DECIMAL Postgres columns (e.g. the ROUND(...) score query
+    below) come back as Decimal via psycopg2 - json.dumps() cannot
+    serialize Decimal on its own and raises:
+        TypeError: Object of type Decimal is not JSON serializable
+
+    Kept identical to routes/roadmap.py's copy of this helper - both
+    call generate_roadmap() with the same shape of data. If this drifts
+    out of sync again, consider moving it to a shared
+    utils/serialization.py instead.
+    """
+    if isinstance(obj, list):
+        return [_make_serializable(i) for i in obj]
+    if isinstance(obj, dict):
+        return {k: _make_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, Decimal):
+        return float(obj)
+    return obj
 
 
 def _roadmap_context(cursor, user_id, dream, current_level):
@@ -32,7 +58,7 @@ def _roadmap_context(cursor, user_id, dream, current_level):
         """,
         (user_id,),
     )
-    academics = cursor.fetchall()
+    academics = _make_serializable(cursor.fetchall())
 
     cursor.execute(
         """
@@ -46,7 +72,7 @@ def _roadmap_context(cursor, user_id, dream, current_level):
         """,
         (user_id, dream, current_level),
     )
-    skill_tree = [dict(row) for row in cursor.fetchall()]
+    skill_tree = _make_serializable([dict(row) for row in cursor.fetchall()])
 
     cursor.execute(
         """
@@ -67,7 +93,7 @@ def _roadmap_context(cursor, user_id, dream, current_level):
         """,
         (user_id,),
     )
-    scores = [dict(row) for row in cursor.fetchall()]
+    scores = _make_serializable([dict(row) for row in cursor.fetchall()])
 
     cursor.execute(
         """
@@ -120,7 +146,8 @@ def _roadmap_context(cursor, user_id, dream, current_level):
         "scores": scores,
         "gaps": gaps,
         "active_subskill": (
-            dict(active_subskill) if active_subskill else None
+            _make_serializable(dict(active_subskill))
+            if active_subskill else None
         ),
     }
 
