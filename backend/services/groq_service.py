@@ -365,11 +365,27 @@ dream career is: "{dream}".
 Their academic results so far (may be empty): {json.dumps(academics)}
 
 Rules:
-- Questions must span difficulty Levels 1 to 3 only (no student starts
-  above Level 3), with a mix spanning that range.
-- Do not reveal difficulty or include labels such as "Level 1" in the
-  question text. Difficulty is for internal placement only.
-- Use a mix of "mcq" and "theory" question types.
+- Build a progressive assessment. Do NOT reveal its levels or include labels
+  such as "Level 1" in the question text; the progression is internal only.
+- Questions 1-2: foundation-level application. Use one MCQ and one short
+  written response. Test a basic action or interpretation, not a definition.
+- Questions 3-5: intermediate application. Use one MCQ and two short written
+  responses. Require the learner to apply a concept, compare choices, inspect
+  an example, or explain their decision.
+- Questions 6-8: advanced practical reasoning. Use one MCQ and two written
+  scenario questions. Give a realistic workplace/task situation and ask for a
+  concise plan, solution, diagnosis, or justified choice.
+- The final test must therefore contain exactly 3 MCQs and 5 written/theory
+  questions. Written questions should be answerable in 2-6 sentences or with
+  a small artefact (for example, a code snippet, calculation, workflow,
+  design rationale, client response, or analysis), depending on the career.
+- Every question must be directly relevant to the dream career. Use practical
+  work from that career rather than generic trivia.
+- Prefer doing and reasoning over "What is..." or "Define..." questions.
+  For technical careers, use output prediction, debugging, small code/query
+  writing, or choosing the correct result. For other careers, use equivalent
+  job-specific tasks such as interpreting a case, prioritizing work, creating
+  a short plan, reviewing an artefact, or responding to a realistic scenario.
 - For "mcq" questions, include exactly 4 options and a correct_answer
   that exactly matches one of the options.
 - For "theory" questions, set "options" and "correct_answer" to null.
@@ -381,6 +397,7 @@ Respond with ONLY a JSON array of 8 objects, each shaped like:
   "question_number": 1,
   "question_text": "...",
   "question_type": "mcq",
+  "concept": "Specific skill or competency being assessed",
   "options": ["...", "...", "...", "..."],
   "correct_answer": "..."
 }}
