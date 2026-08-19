@@ -135,6 +135,48 @@ def run_grading():
             for result in ai_results
         }
 
+        # Multiple-choice answers have an explicit correct answer, so their
+        # score must be deterministic: correct is 10, incorrect is 0. AI is
+        # used only for written/theory responses where partial credit makes
+        # sense. This also prevents technically plausible but non-matching
+        # MCQ answers from receiving arbitrary half marks.
+        for question in questions_rows:
+            if question["question_type"] != "mcq":
+                continue
+
+            answer = (answers_map.get(question["id"]) or "").strip()
+            correct = (question["correct_answer"] or "").strip()
+            is_correct = answer.casefold() == correct.casefold()
+            ai_results_map[question["question_number"]] = {
+                "question_number": question["question_number"],
+                "concept": question.get("concept") or "General",
+                "score_out_of_10": 10 if is_correct else 0,
+                "feedback": (
+                    "Correct." if is_correct else
+                    "Incorrect. Review the correct answer and when to use it."
+                ),
+            }
+
+        # Recalculate the total after replacing MCQ scores, and derive gaps
+        # from the final scores rather than the AI's pre-normalized output.
+        final_scores = [
+            float(ai_results_map.get(question["question_number"], {}).get(
+                "score_out_of_10", 0
+            ))
+            for question in questions_rows
+        ]
+        total_score_percent = round(
+            sum(final_scores) / (len(questions_rows) * 10) * 100,
+            1,
+        )
+        knowledge_gaps = list(dict.fromkeys(
+            question.get("concept") or "General"
+            for question in questions_rows
+            if float(ai_results_map.get(question["question_number"], {}).get(
+                "score_out_of_10", 0
+            )) < 5
+        ))[:5]
+
         # NOTE: concept_performance is NOT read from grading_result.
         # grade_answers() never returns a "concept_performance" key (its
         # prompt only asks for results/total_score_percent/knowledge_gaps),
