@@ -129,15 +129,20 @@ def run_grading():
             0.0,
         )
         knowledge_gaps = grading_result.get("knowledge_gaps", [])
-        concept_performance = grading_result.get(
-            "concept_performance",
-            [],
-        )
         ai_results = grading_result.get("results", [])
         ai_results_map = {
             result["question_number"]: result
             for result in ai_results
         }
+
+        # NOTE: concept_performance is NOT read from grading_result.
+        # grade_answers() never returns a "concept_performance" key (its
+        # prompt only asks for results/total_score_percent/knowledge_gaps),
+        # so that used to silently evaluate to [] every time. The real
+        # per-concept scores come from gap_analysis.analyze_skill_gaps()
+        # below, once it runs - concept_performance is built from its
+        # output further down, after gap_data exists.
+        concept_performance = []
 
         gap_data = None
         placement_data = None
@@ -185,6 +190,22 @@ def run_grading():
                     print(f"[grading/run] gap analysis error: {error}")
                     print(traceback.format_exc())
 
+            # Build concept_performance from gap_data now that it exists.
+            # gap_analysis's weak_concepts items are shaped
+            # {"concept": ..., "score": ...} - translate "score" to
+            # "score_percent" since that's the key
+            # generate_personalized_subskills() actually filters on.
+            # gap_analysis already applies its own WEAK_THRESHOLD (50),
+            # so everything in weak_concepts already qualifies here.
+            if gap_data:
+                concept_performance = [
+                    {
+                        "concept": item["concept"],
+                        "score_percent": item["score"],
+                    }
+                    for item in gap_data.get("weak_concepts", [])
+                ]
+
             # Passing a remediation test completes only that remediation skill.
             if (
                 test_type == "skill_test"
@@ -206,6 +227,9 @@ def run_grading():
                 and skill_id
                 and not adaptive_skill_id
             ):
+                # concept_performance is already filtered to weak (<50%)
+                # concepts via gap_data above; this re-check is a harmless
+                # safety net, not the primary gate.
                 weak_concepts = [
                     item for item in concept_performance
                     if item["score_percent"] < 50
