@@ -892,19 +892,10 @@ Return ONLY this JSON object:
     "concept": null,
     "why_now": "Why this is the correct next focus for this learner.",
     "what_to_learn": "What the learner should focus on.",
-    "learning_resources": [
-      {
-        "label": "Short resource label",
-        "description": "A brief, useful explanation of what the learner will find.",
-        "search_query": "Specific search terms for this skill and career",
-        "destination": "web"
-      },
-      {
-        "label": "Video search label",
-        "description": "What to look for in a video.",
-        "search_query": "Specific video search terms for this skill",
-        "destination": "video"
-      }
+    "resource_types": [
+      "Professional resource: specific search terms for this skill and career",
+      "Practice resource: specific search terms for hands-on practice",
+      "Video search: specific topic search terms"
     ],
     "return_to_core_sequence": false
   }},
@@ -919,23 +910,29 @@ Return ONLY this JSON object:
         temperature=0.3,
     )
 
-    # Keep the resource contract compact and safe for the frontend. The UI
-    # creates the actual search link, so the model never needs to invent URLs.
+    # The model returns a simple list of resource search instructions. Convert
+    # it to a small, safe structure for the UI; the UI creates the actual link
+    # and the model never needs to invent a URL.
     current_focus = roadmap.get("current_focus") or {}
-    resources = current_focus.get("learning_resources")
-    if not isinstance(resources, list):
-        resources = []
-    current_focus["learning_resources"] = [
-        {
-            "label": str(item.get("label") or "Learning resource")[:80],
-            "description": str(item.get("description") or "")[:180],
-            "search_query": str(item.get("search_query") or "")[:180],
-            "destination": (
-                "video" if item.get("destination") == "video" else "web"
-            ),
+    resource_types = current_focus.get("resource_types")
+    if not isinstance(resource_types, list):
+        resource_types = []
+
+    def _resource_item(resource_type):
+        text = str(resource_type).strip()
+        label, separator, query = text.partition(":")
+        query = query.strip() if separator else text
+        return {
+            "label": (label.strip() or "Learning resource")[:80],
+            "description": f"Search for {query}."[:180],
+            "search_query": query[:180],
+            "destination": "video" if "video" in label.lower() else "web",
         }
-        for item in resources[:3]
-        if isinstance(item, dict) and item.get("search_query")
+
+    current_focus["learning_resources"] = [
+        _resource_item(item)
+        for item in resource_types[:3]
+        if isinstance(item, str) and item.strip()
     ]
     roadmap["current_focus"] = current_focus
 
