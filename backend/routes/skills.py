@@ -97,6 +97,29 @@ def _roadmap_context(cursor, user_id, dream, current_level):
 
     cursor.execute(
         """
+        SELECT
+            qq.question_text,
+            qq.concept,
+            sc.score_out_of_10
+        FROM quiz_sessions qs
+        JOIN quiz_questions qq ON qq.session_id = qs.id
+        JOIN quiz_scores sc ON sc.session_id = qs.id AND sc.question_id = qq.id
+        WHERE qs.id = (
+            SELECT id FROM quiz_sessions
+            WHERE user_id = %s AND test_type = 'placement'
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+        )
+        ORDER BY qq.question_number ASC
+        """,
+        (user_id,),
+    )
+    placement_evidence = _make_serializable(
+        [dict(row) for row in cursor.fetchall()]
+    )
+
+    cursor.execute(
+        """
         SELECT weak_concepts
         FROM skill_gap_analysis
         WHERE user_id = %s
@@ -165,6 +188,7 @@ def _roadmap_context(cursor, user_id, dream, current_level):
         "academics": academics,
         "skill_tree": skill_tree,
         "scores": scores,
+        "placement_evidence": placement_evidence,
         "gaps": gaps,
         "active_subskill": (
             _make_serializable(dict(active_subskill))
@@ -503,6 +527,7 @@ def complete_skill():
                 academics=context["academics"],
                 skill_tree=context["skill_tree"],
                 scores=context["scores"],
+                placement_evidence=context["placement_evidence"],
                 gaps=context["gaps"],
                 active_subskill=context["active_subskill"],
                 completed_subskill=context["completed_subskill"],

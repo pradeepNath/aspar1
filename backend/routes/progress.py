@@ -12,7 +12,7 @@ from flask import Blueprint, request, jsonify, g
 from config.db import get_db_connection
 from utils.auth import token_required
 from services.groq_service import evaluate_progress, generate_roadmap
-from services.gap_analysis import get_learner_model
+from routes.roadmap import _build_roadmap_context
 
 progress_bp = Blueprint("progress", __name__)
 
@@ -188,35 +188,33 @@ def evaluate():
 
                 # --- Regenerate roadmap with new signature ---
                 if decision in ("level_up", "ease_roadmap"):
-                    current_skill = None
-                    cursor.execute(
-                        """
-                        SELECT skill_name, skill_type, category
-                        FROM skill_tree
-                        WHERE user_id = %s AND career = %s AND level = %s
-                          AND status = 'unlocked'
-                        ORDER BY sequence_order ASC
-                        LIMIT 1
-                        """,
-                        (g.user_id, dream, new_level)
-                    )
-                    cs_row = cursor.fetchone()
-                    if cs_row:
-                        current_skill = dict(cs_row)
-
                     cursor.execute(
                         "SELECT MAX(version) AS max_v FROM roadmaps WHERE user_id = %s",
                         (g.user_id,)
                     )
                     ver_row      = cursor.fetchone()
                     next_version = (ver_row["max_v"] or 0) + 1
+                    context = _build_roadmap_context(
+                        cursor, g.user_id, dream, new_level
+                    )
 
                     try:
-                        learner_model = get_learner_model(conn3, g.user_id)
-                        rm = generate_roadmap(dream, current_skill, learner_model)
+                        rm = generate_roadmap(
+                            dream=dream,
+                            academics=context["academics"],
+                            skill_tree=context["skill_tree"],
+                            scores=context["scores"],
+                            placement_evidence=context["placement_evidence"],
+                            gaps=context["gaps"],
+                            active_subskill=context["active_subskill"],
+                            completed_subskill=context["completed_subskill"],
+                        )
                         stored_payload = json.dumps({
-                            "overview":      rm.get("overview", ""),
-                            "current_skill": rm.get("current_skill"),
+                            "focus_type": rm.get("focus_type"),
+                            "overview": rm.get("overview", ""),
+                            "parent_core_skill": rm.get("parent_core_skill"),
+                            "current_skill": rm.get("current_focus"),
+                            "next_core_skill": rm.get("next_core_skill"),
                         })
                         cursor.execute(
                             "INSERT INTO roadmaps (user_id, roadmap_text, version) VALUES (%s, %s, %s)",

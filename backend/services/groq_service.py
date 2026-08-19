@@ -752,6 +752,7 @@ def generate_roadmap(
     skill_tree,
     scores,
     gaps,
+    placement_evidence=None,
     active_subskill=None,
     completed_subskill=None,
 ):
@@ -768,6 +769,7 @@ def generate_roadmap(
         skill_tree: Visible shared-core skills for this learner, including
                     skill_name, category, skill_type, status, and level.
         scores: Learner's past test-score data.
+        placement_evidence: Per-question scores from the latest placement test.
         gaps: Demonstrated weak concepts.
         active_subskill: Optional learner-specific remediation object:
             {
@@ -841,6 +843,9 @@ Shared core skill tree:
 Learner's past test scores:
 {json.dumps(scores)}
 
+Latest placement evidence (each score is out of 10):
+{json.dumps(placement_evidence or [])}
+
 Demonstrated knowledge gaps:
 {json.dumps(gaps)}
 
@@ -853,31 +858,42 @@ Rules:
 
 1. The shared core skill tree is fixed for all learners in this career.
    Do not suggest changing its skills, order, level, or dependencies.
+   The status values in that tree are the only source of truth for progress.
+   Never say a skill is completed, passed, learned, or mastered unless its
+   status is exactly "learned". The current focus is not completed unless the
+   tree says so.
 
-2. If focus_type is "personalized_subskill":
+2. Personalize from evidence, not assumptions:
+   - Refer to one or two demonstrated strengths or gaps from the placement
+     evidence, scores, or knowledge gaps when such evidence exists.
+   - Explain how the current skill addresses those specific findings.
+   - Do not make claims about the learner's experience, completion, or score
+     that are absent from the supplied data.
+
+3. If focus_type is "personalized_subskill":
    - The learner must focus on this remediation subskill first.
    - Explain that it supports the parent core skill.
    - Focus only on the demonstrated weak concept.
    - State that after mastering it, the learner returns to the normal
      core-skill sequence.
 
-3. If focus_type is "core_skill":
+4. If focus_type is "core_skill":
    - Explain why this shared core skill is the next normal step.
    - Use academic results, scores, and gaps only to personalize the
     explanation and learning emphasis—not to change the core skill.
 
-4. If focus_type is "return_to_core":
+5. If focus_type is "return_to_core":
    - Acknowledge the completed remediation subskill by name.
    - Explain how it supports the current core skill and what to do next.
    - Keep the current core skill as the exact current_focus skill_name.
 
-5. If focus_type is "none":
+6. If focus_type is "none":
    - Return only an overview explaining that no current skill is available.
 
-6. Make why_now and what_to_learn specific but scannable: each must be one
+7. Make why_now and what_to_learn specific but scannable: each must be one
    or two short sentences, with concrete concepts or actions.
 
-7. Create a compact learning mission:
+8. Create a compact learning mission:
    - estimated_effort: a realistic short estimate such as "2–3 focused sessions".
    - mission_steps: exactly 3 or 4 short, ordered actions. Each step must be
      practical and build on the previous one.
@@ -886,7 +902,7 @@ Rules:
      is ready to take the test. Do not use vague statements such as "understand
      the topic".
 
-8. Recommend resources appropriate to the career and skill—not just software
+9. Recommend resources appropriate to the career and skill—not just software
    resources. For example, use professional bodies and clinical guidelines for
    healthcare, portfolios and briefs for design, case studies for business,
    labs or simulations for science, and official references for technical work.
