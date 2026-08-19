@@ -10,8 +10,9 @@ Per Section 10 of the design doc:
                      (latest-attempt-only FIFO).
   - Placement test:  never cleaned up (one-time, permanent).
 
-These functions are called from quiz.py BEFORE a new session is created,
-so the old data is removed first and the new session is the "latest".
+These functions are called from quiz.py BEFORE a new session is created.
+For core-skill retries, detailed question data is removed while session and
+gap-analysis history remain available for adaptive decisions.
 
 They are plain functions (not background jobs / cron tasks) so they are
 easy to call inline, easy to test with dummy data, and easy to demo.
@@ -55,8 +56,9 @@ def cleanup_level_up_sessions(conn, user_id):
 
 def cleanup_skill_test_session(conn, user_id, skill_id):
     """
-    Delete the previous skill_test session (questions + answers) for
-    this specific skill so only the latest attempt is kept.
+    Clear question-level data from previous core-skill test sessions while
+    retaining their session records. Retaining the sessions is essential for
+    skill_gap_analysis to measure repeated attempts at the same core skill.
 
     Args:
         conn:     active PyMySQL connection
@@ -74,12 +76,23 @@ def cleanup_skill_test_session(conn, user_id, skill_id):
         )
         rows = cursor.fetchall()
 
-    # Delete ALL previous sessions for this skill (we're about to create
-    # a fresh one, so everything before it is stale).
+    # Keep the lightweight session history for attempt/gap tracking. The
+    # question, answer, and score rows are no longer needed once a fresh test
+    # is about to be generated, so only that detailed data is removed.
     sessions_to_delete = [row["id"] for row in rows]
 
     if sessions_to_delete:
-        _delete_sessions(conn, sessions_to_delete)
+        _clear_session_question_data(conn, sessions_to_delete)
+
+
+def _clear_session_question_data(conn, session_ids):
+    """Remove retained sessions' questions; dependent answers/scores cascade."""
+    placeholders = ", ".join(["%s"] * len(session_ids))
+    with conn.cursor() as cursor:
+        cursor.execute(
+            f"DELETE FROM quiz_questions WHERE session_id IN ({placeholders})",
+            session_ids,
+        )
 
 
 def _delete_sessions(conn, session_ids):
